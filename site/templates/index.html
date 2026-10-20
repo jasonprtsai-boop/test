@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}專題首頁｜TM5-700 象棋機器人{% endblock %}
+{% block content %}
+<section class="hero section-shell">
+  <div class="eyebrow">ROBOTICS CAPSTONE PROJECT</div>
+  <div class="hero-grid">
+    <div>
+      <h1>讓機械手臂<br><span>看懂棋局，也完成落子。</span></h1>
+      <p class="lead">本專題整合 TM5-700、雙視角相機、YOLO 棋子辨識與 Pikafish，建立從玩家走子到 AI 真機落子的完整閉環。</p>
+      <div class="hero-actions">
+        <a class="button primary" href="/player">進入玩家介面</a>
+        <a class="button secondary" href="/monitor">查看即時監控</a>
+      </div>
+    </div>
+    <aside class="hero-note" aria-label="安全設計摘要">
+      <span class="note-index">01</span>
+      <h2>先驗證，再動作</h2>
+      <p>玩家執紅時，完成第一步後才啟動辨識；引擎執紅時先確認初始盤面。AI 對 AI 的每一步都必須由操作員確認後才執行。</p>
+      <div class="rule"></div>
+      <p class="small">真機預設鎖定。網站停止不是實體急停。</p>
+    </aside>
+  </div>
+</section>
+
+<section class="section-shell section-block">
+  <div class="section-heading"><span>02 / SYSTEM FLOW</span><h2>系統運作流程</h2></div>
+  <ol class="flow-list">
+    <li><b>01</b><div><strong>玩家完成走子</strong><span>玩家按下完成，系統才開始拍攝。</span></div></li>
+    <li><b>02</b><div><strong>雙視角辨識</strong><span>V1 與 V2 經 YOLO 辨識後融合為單一盤面。</span></div></li>
+    <li><b>03</b><div><strong>Pikafish 決策</strong><span>驗證玩家著法並計算 AI 下一步。</span></div></li>
+    <li><b>04</b><div><strong>TM5-700 落子</strong><span>工作佇列依序處理吃子、取放與 Pose 回授。</span></div></li>
+    <li><b>05</b><div><strong>拍照驗證</strong><span>結果符合預期後，才正式更新盤面。</span></div></li>
+  </ol>
+</section>
+
+<section class="results-wrap">
+  <div class="section-shell section-block">
+    <div class="section-heading light"><span>03 / MEASURED RESULTS</span><h2>實測成果</h2></div>
+    <div class="metrics">
+      <article><strong>100<small>/100</small></strong><h3>雙視角機械循環完成</h3><p>平均每輪 18.82 秒</p></article>
+      <article><strong>89<small>/100</small></strong><h3>雙視角＋YOLO 整合完成</h3><p>11 輪因連線重設或逾時中斷</p></article>
+      <article><strong>0.248<small>秒</small></strong><h3>成功輪 YOLO 平均時間</h3><p>此數值是處理時間，不是辨識準確率</p></article>
+    </div>
+    <p class="method-note">現有測試沒有 ground truth，且成功輪最終棋子數並非固定 32 枚，因此 89/100 不作為辨識準確率。</p>
+  </div>
+</section>
+
+<section class="section-shell section-block team-block">
+  <div class="section-heading"><span>04 / TEAM</span><h2>專題團隊</h2></div>
+  <p>TM5-700 中國象棋機器人專題團隊</p>
+  <div class="tech-row"><span>TM5-700</span><span>TMvision</span><span>YOLO</span><span>Pikafish</span><span>Flask</span></div>
+</section>
+{% endblock %}

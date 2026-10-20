@@ -1,0 +1,9 @@
+runtime/
+outputs/
+對局紀錄/
+系統紀錄/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.venv311-backup/

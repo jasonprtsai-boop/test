@@ -1,9 +1,17 @@
 .venv/
+.test_deps/
 .runtime/
+site/runtime/
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .env
 .env.*
 !.env.example
 *.pem
 *.key
+
+# Generated experiment outputs; raw source evidence is intentionally not ignored.
+/dual_view_results/
+/yolo_test/
+/TM_4Point_DualVision_YOLO/

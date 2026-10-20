@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}即時監控｜TM5-700 象棋機器人{% endblock %}
+{% block content %}
+<section class="page-title section-shell">
+  <div><span class="eyebrow">OPERATOR MONITOR</span><h1>系統監控</h1><p>顯示辨識、Pose 與流程狀態；人工確認只供現場操作人員使用。</p></div>
+  <div><div id="phasePill" class="phase-pill" role="status" aria-live="polite" aria-atomic="true">讀取中</div><small id="revisionText" class="revision-text">revision —</small></div>
+</section>
+
+<section class="section-shell monitor-layout">
+  <div class="vision-column">
+    <div class="monitor-heading"><div><span class="panel-kicker">DUAL VIEW</span><h2>YOLO 最新影像</h2></div><span id="visionStatus" class="subtle-badge" role="status" aria-live="polite" aria-atomic="true">尚無影像</span></div>
+    <div class="image-grid">
+      <figure><div class="image-frame"><img id="v1Image" alt="V1 YOLO 標註影像" hidden><span id="v1Empty">V1 等待辨識</span></div><figcaption>V1 / 主視角</figcaption></figure>
+      <figure><div class="image-frame"><img id="v2Image" alt="V2 YOLO 標註影像" hidden><span id="v2Empty">V2 等待辨識</span></div><figcaption>V2 / 補充視角</figcaption></figure>
+    </div>
+    <p id="captureTime" class="caption-note">辨識期間會保留上一組已完成影像。</p>
+  </div>
+
+  <aside class="telemetry-column">
+    <article class="panel">
+      <div class="panel-kicker">OPERATOR CONFIRMATION</div>
+      <h2>本次啟動確認</h2>
+      <p class="caption-note">請先在現場確認 TMflow 的 Base 為 RobotBase、TCP 為 NOTOOL，再按下確認。中斷動作則必須先確認 Robot 已完全停止。</p>
+      <div class="action-grid">
+        <button id="confirmBaseTcp" class="button secondary" type="button">確認 Base／TCP</button>
+        <button id="confirmSafeStop" class="button danger" type="button" hidden>確認 Robot 已停止</button>
+      </div>
+      <p id="operatorMessage" class="caption-note" role="status" aria-live="polite"></p>
+    </article>
+    <article class="panel">
+      <div class="pose-title">
+        <div><span class="panel-kicker">SAFETY PREFLIGHT</span><h2>操作端預檢</h2></div>
+        <span id="preflightStatus" class="subtle-badge" role="status" aria-live="polite" aria-atomic="true">讀取中</span>
+      </div>
+      <ul id="preflightList" class="preflight-list"></ul>
+      <p id="preflightTime" class="caption-note">尚未執行預檢</p>
+    </article>
+    <article class="panel">
+      <div class="panel-kicker">ROBOT POSE</div>
+      <div class="pose-title"><h2>六軸座標</h2><span id="poseFreshness" class="subtle-badge warning" role="status" aria-live="polite" aria-atomic="true">資料可能已過期</span></div>
+      <dl class="pose-grid">
+        <div><dt>X</dt><dd id="poseX">—</dd></div><div><dt>Y</dt><dd id="poseY">—</dd></div><div><dt>Z</dt><dd id="poseZ">—</dd></div>
+        <div><dt>RX</dt><dd id="poseRx">—</dd></div><div><dt>RY</dt><dd id="poseRy">—</dd></div><div><dt>RZ</dt><dd id="poseRz">—</dd></div>
+      </dl>
+      <p id="poseTime" class="caption-note">尚未收到 Pose</p>
+    </article>
+    <article class="panel action-card"><div><span>目前動作</span><strong id="currentAction">待命</strong></div><div><span>下一動作</span><strong id="nextAction">—</strong></div></article>
+    <article class="panel">
+      <div class="panel-kicker">GAME RECORD</div>
+      <h2>本局 Excel</h2>
+      <p id="recordStatus" class="caption-note">開始對局後會在網站資料夾的「對局紀錄」中建立獨立檔案。</p>
+      <a id="recordDownload" class="button secondary" href="/api/game/record" download hidden>下載本局紀錄</a>
+    </article>
+    <article id="monitorError" class="error-box" role="alert" aria-atomic="true" hidden></article>
+    <article class="safety-strip">網站停止不是實體 Emergency Stop。</article>
+  </aside>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='common.js') }}"></script><script src="{{ url_for('static', filename='monitor.js') }}"></script>{% endblock %}

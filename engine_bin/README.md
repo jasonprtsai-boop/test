@@ -1,23 +1,29 @@
-# Pikafish 執行檔紀錄
+# Pikafish 執行資產紀錄
 
-- 匯入日期：2026-09-22。
-- 來源：`C:\Users\user\Desktop\專題\專題程式\Pikafish\pikafish-avx2.exe`。
-- 引擎回報版本：Pikafish 2025-06-27。
-- 本專案檔名：`pikafish.exe`，符合 `config.py` 的 `ENGINE_PATH`。
-- SHA-256：`C4C00F7C7C97E0C46809A08210DF86836B3616583B200F5016AE6C81CF17F644`。
-- 附帶原始 `Copying.txt` 與 `AUTHORS`；未複製 GUI、開局庫、原始碼或其他 CPU 版本。
+本目錄只保留網站無介面運行所需的引擎、NNUE 權重與授權文件；GUI 安裝程式、其他作業系統執行檔、開局庫與 C++ 原始碼不會被產品程式載入。
 
-## 尚缺模型權重
+## 目前已驗證的配對
 
-來源資料夾及其子目錄中未找到 `.nnue` 權重檔。此引擎預設要求
-`pikafish.nnue`，必須補入與此版本相容的權重，才能進行棋局計算。
-執行檔本身不是模型權重。
+來源：`C:\Users\user\Desktop\專題\專題程式\pikafish\Pikafish皮卡鱼20260925`
 
-已確認目前電腦支援 AVX2；來源執行檔的 UCI 測試回傳 `uciok`、
-`readyok`。盤面評估測試因缺少 `pikafish.nnue` 而退出，不能視為
-已完成引擎計算驗證。複製的三個檔案皆已比對 SHA-256。
+- `pikafish.exe`
+  - 來源檔：`Pikafish-Windows-x86-64-universal.exe`
+  - 引擎回報：Pikafish 2026-09-25
+  - SHA-256：`9824FFF4E3C4A72AFBC6CFDC611C140B32F79E3C5FD5FE4BF6D747833875B86D`
+- `pikafish.nnue`
+  - SHA-256：`7D13D73569A9B571BA0EB20CF1596247BC2A42738967E61AFEF6482B231E900E`
 
-官方使用文件：
-https://github.com/official-pikafish/Pikafish/wiki/Download-and-usage
+此配對已完成 UCI 初始化、`isready`、NNUE 載入、初始盤面計算及 `bestmove` 解析測試。來源更新紀錄表示此版更新搜尋、權重與規則，並由 universal 執行檔自動選擇 CPU 指令集。
 
-上述版本、缺檔與啟動結果以本地檔案及實測為依據；權重相容性尚未驗證。
+## 路徑相容性
+
+此 Windows 執行檔無法正確解析含中文的 NNUE 絕對路徑。網站 adapter 會把工作目錄設為 `engine_bin`，並傳入相對檔名 `pikafish.nnue`；不得改回含中文的絕對 `EvalFile` 路徑。
+
+## 檔案
+
+- `pikafish.exe`：UCI 象棋引擎。
+- `pikafish.nnue`：與上述引擎配對的局面評估權重。
+- `AUTHORS`、`Copying.txt`：同一來源快照的作者與 GPL 授權。
+- `NNUE-License.md`：2026-09-25 發行套件內的權重使用條款。
+
+引擎與網站的實際整合測試位於 `site/tests/test_engine.py`。

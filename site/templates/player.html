@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}玩家介面｜TM5-700 象棋機器人{% endblock %}
+{% block content %}
+<section class="page-title section-shell">
+  <div><span class="eyebrow">PLAYER CONSOLE</span><h1>開始對局</h1><p>選擇從標準開局、上一局或目前棋盤開始。</p></div>
+</section>
+
+<section class="section-shell player-layout">
+  <article class="panel control-panel">
+    <div id="setupSection">
+      <div id="lastResultSection" class="safety-banner ready" role="status" aria-live="polite" hidden>
+        <span id="lastResultMessage"></span>
+      </div>
+      <div id="resumeSection" hidden>
+        <div class="panel-kicker">RESUME GAME</div>
+        <h2>繼續上一局</h2>
+        <p id="resumeInfo" class="status-message">找到尚未結束的對局。</p>
+        <div id="resumeActorChoices" class="choice-grid" role="radiogroup" aria-label="選擇目前回合">
+          <label><input type="radio" name="resumeActor" value="player" checked><span><b>輪到玩家</b><small>核對盤面後等待玩家走子</small></span></label>
+          <label><input type="radio" name="resumeActor" value="ai"><span><b>輪到 AI</b><small>核對盤面後才允許 AI 動作</small></span></label>
+        </div>
+        <button id="resumeButton" class="button secondary full" type="button" disabled>繼續上一局</button>
+        <p class="setup-message">恢復時會先重新拍攝棋盤；不會直接重播中斷中的機械動作。</p>
+        <div class="divider"></div>
+      </div>
+      <div id="currentBoardSection">
+        <label for="continuationMode">目前棋盤的用途</label>
+        <select id="continuationMode" class="full">
+          <option value="auto">恢復同一場對戰（先核對棋譜）</option>
+          <option value="rebaseline">同一場對戰，重新建立盤面基準</option>
+          <option value="new">開始全新對戰</option>
+        </select>
+        <p class="setup-message">辨識失敗請先選恢復。重新建立基準會保留同場關聯，並標示無法確認的中間棋步；只有全新對戰才另計一場。</p>
+        <div class="panel-kicker">CURRENT BOARD</div>
+        <h2>從目前棋盤開始</h2>
+        <p class="status-message">重新拍攝雙視角，將現場棋盤建立為新的對局基準。</p>
+        <div class="choice-grid" role="radiogroup" aria-label="選擇玩家顏色">
+          <label><input type="radio" name="currentPlayerColor" value="red" checked><span><b>玩家執紅</b><small>AI 執黑</small></span></label>
+          <label><input type="radio" name="currentPlayerColor" value="black"><span><b>玩家執黑</b><small>AI 執紅</small></span></label>
+        </div>
+        <div class="choice-grid choice-grid-spaced" role="radiogroup" aria-label="選擇目前回合">
+          <label><input type="radio" name="currentBoardActor" value="player" checked><span><b>輪到玩家</b><small>辨識完成後等待玩家</small></span></label>
+          <label><input type="radio" name="currentBoardActor" value="ai"><span><b>輪到 AI</b><small>辨識完成後 AI 立即計算</small></span></label>
+        </div>
+        <button id="currentBoardButton" class="button secondary full" type="button" disabled>辨識目前棋盤並開始</button>
+        <p class="setup-message">這會建立新對局，不沿用舊局著法歷史；舊紀錄仍會保留。</p>
+        <div class="divider"></div>
+      </div>
+      <div class="panel-kicker">NEW GAME</div>
+      <h2>從頭開始</h2>
+      <p class="status-message">請先把棋子排成標準開局，再選擇紅黑方的控制方式。</p>
+      <div class="choice-grid mode-grid" role="radiogroup" aria-label="選擇對局模式">
+        <label><input type="radio" name="gameMode" value="human_red" checked><span><b>玩家執紅</b><small>Pikafish 執黑</small></span></label>
+        <label><input type="radio" name="gameMode" value="human_black"><span><b>玩家執黑</b><small>Pikafish 執紅</small></span></label>
+        <label><input type="radio" name="gameMode" value="engine_vs_engine"><span><b>AI 對 AI</b><small>每一步都要確認才執行</small></span></label>
+        <label><input type="radio" name="gameMode" value="analysis"><span><b>雙人分析</b><small>紅黑皆由人走，可隨時提示</small></span></label>
+      </div>
+      <button id="startButton" class="button primary full" type="button" disabled>系統準備中…</button>
+      <p id="setupMessage" class="setup-message" role="status" aria-live="polite">請稍候。</p>
+    </div>
+
+    <div id="gameSection" hidden>
+      <div class="panel-kicker">CURRENT TURN</div>
+      <h2>目前回合</h2>
+      <div id="turnDisplay" class="turn-display" aria-live="polite" aria-atomic="true">—</div>
+      <p id="gameMessage" class="status-message" role="status" aria-live="polite" aria-atomic="true">正在讀取遊戲狀態…</p>
+      <section id="analysisPanel" class="analysis-panel" aria-live="polite" aria-atomic="true" hidden>
+        <div class="analysis-heading">
+          <div><span class="panel-kicker">PIKAFISH ANALYSIS</span><h3>局勢分析</h3></div>
+          <span id="analysisStatus" class="subtle-badge">—</span>
+        </div>
+        <p id="analysisBest" class="analysis-best">—</p>
+        <div id="wdlGrid" class="wdl-grid" hidden>
+          <div><span>紅勝估計</span><strong id="redWin">—</strong></div>
+          <div><span>和棋估計</span><strong id="drawRate">—</strong></div>
+          <div><span>黑勝估計</span><strong id="blackWin">—</strong></div>
+        </div>
+        <ol id="analysisLines" class="analysis-lines"></ol>
+        <p class="analysis-note">估計值來自引擎自我對弈模型，不代表真人對局的保證勝率。取得提示不會命令機械手臂。</p>
+      </section>
+      <div class="action-grid">
+        <button id="hintButton" class="button secondary" type="button" disabled>取得提示</button>
+        <button id="doneButton" class="button primary" type="button" disabled>玩家完成</button>
+        <button id="executeEngineButton" class="button primary" type="button" disabled hidden>確認並執行引擎著法</button>
+        <button id="retryButton" class="button secondary" type="button" disabled hidden>重新落子</button>
+        <button id="stopButton" class="button danger" type="button" disabled>停止遊戲</button>
+      </div>
+      <p class="player-safety-note">若吸取或放置失敗，請先確認現場安全再按「重新落子」；棋盤取放高度固定為 Z=288，重試不會繼續下降。如有危險，請使用控制器上的實體 Emergency Stop。</p>
+    </div>
+    <div id="errorBox" class="error-box" role="alert" aria-atomic="true" hidden></div>
+  </article>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='common.js') }}"></script><script src="{{ url_for('static', filename='player.js') }}"></script>{% endblock %}

@@ -1,0 +1,122 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from openpyxl import load_workbook
+
+from tmchess.board import Move, apply_move
+from tmchess.config import SITE_ROOT
+from tmchess.records import GameRecordWriter
+from tmchess.session import GameSessionStore
+from tmchess.state import Phase
+from tmchess.web import create_ui_app
+from tests.fakes import make_service, starting_board, wait_for
+
+
+class GameRecordTests(unittest.TestCase):
+    def setUp(self):
+        (SITE_ROOT / "runtime").mkdir(exist_ok=True)
+        self.temporary = tempfile.TemporaryDirectory(dir=SITE_ROOT / "runtime")
+        root = Path(self.temporary.name)
+        self.sessions = GameSessionStore(root / "games")
+        self.records = GameRecordWriter(root / "對局紀錄")
+        initial = starting_board()
+        player_move = Move((0, 3), (0, 4), 0, "a3a4")
+        after_player = apply_move(initial, player_move)
+        ai_move = Move((0, 6), (0, 5), 0, "a6a5")
+        expected = apply_move(after_player, ai_move)
+        self.service, *_ = make_service(
+            [after_player, expected],
+            [ai_move],
+            session_store=self.sessions,
+            record_writer=self.records,
+        )
+
+    def tearDown(self):
+        self.service.close()
+        self.temporary.cleanup()
+
+    def test_each_game_gets_detailed_workbook_without_blocking_robot_flow(self):
+        self.service.submit_start("player")
+        wait_for(self.service, Phase.PLAYER_TURN.value)
+        self.service.submit_player_done()
+        state = wait_for(self.service, Phase.PLAYER_TURN.value)
+        self.assertTrue(self.records.flush())
+
+        game_id = state["game"]["id"]
+        path = self.records.path_for(game_id)
+        self.assertTrue(path.is_file())
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        try:
+            self.assertEqual(
+                workbook.sheetnames,
+                ["對局摘要", "著法紀錄", "拍攝紀錄", "Robot動作", "流程紀錄", "棋盤履歷", "引擎紀錄", "辨識盤面"],
+            )
+            moves = list(workbook["著法紀錄"].iter_rows(min_row=4, values_only=True))
+            self.assertEqual([row[5] for row in moves], ["a3a4", "a6a5"])
+            self.assertEqual([row[3] for row in moves], ["玩家", "AI"])
+            self.assertTrue(all(row[20] and row[21] for row in moves))
+            self.assertEqual([row[1] for row in moves], [1, 1])
+            captures = list(workbook["拍攝紀錄"].iter_rows(min_row=4, values_only=True))
+            self.assertEqual(len(captures), 2)
+            self.assertEqual([row[4] for row in captures], ["玩家走子", "AI 落子驗證"])
+            motions = list(workbook["Robot動作"].iter_rows(min_row=4, values_only=True))
+            self.assertEqual(len(motions), 1)
+            self.assertEqual(motions[0][6], "a6a5")
+            events = list(workbook["流程紀錄"].iter_rows(min_row=4, values_only=True))
+            self.assertGreaterEqual(len(events), 3)
+            summary_values = {
+                row[0]: row[1]
+                for row in workbook["對局摘要"].iter_rows(min_row=5, max_col=2, values_only=True)
+                if row[0]
+            }
+            self.assertEqual(summary_values["對局編號"], game_id)
+            self.assertEqual(summary_values["已提交著法"], 2)
+            self.assertEqual(summary_values["執行模式"], "未啟用")
+
+            saved = json.loads(
+                (self.sessions.game_directory(game_id) / "game.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(saved["schema_version"], 3)
+            self.assertEqual(len(saved["move_history"]), 2)
+            self.assertEqual(len(saved["capture_history"]), 2)
+            self.assertEqual(len(saved["motion_history"]), 1)
+            self.assertTrue(saved["move_history"][0]["fen_before"])
+            self.assertTrue(saved["move_history"][0]["fen_after"])
+        finally:
+            workbook.close()
+
+    def test_monitor_downloads_current_game_workbook(self):
+        self.service.submit_start("player")
+        state = wait_for(self.service, Phase.PLAYER_TURN.value)
+        self.assertTrue(self.records.flush())
+        app = create_ui_app(self.service)
+
+        response = app.test_client().get("/api/game/record")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.mimetype,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertIn(state["game"]["id"], response.headers["Content-Disposition"])
+        response.close()
+
+    def test_new_game_creates_a_separate_workbook(self):
+        self.service.submit_start("player")
+        first = wait_for(self.service, Phase.PLAYER_TURN.value)["game"]["id"]
+        self.service.submit_stop()
+        wait_for(self.service, Phase.STOPPED.value)
+
+        self.service.submit_start("player")
+        second = wait_for(self.service, Phase.PLAYER_TURN.value)["game"]["id"]
+        self.assertNotEqual(first, second)
+        self.assertTrue(self.records.flush())
+
+        files = {path.stem for path in self.records.root.glob("*.xlsx")}
+        self.assertEqual(files, {first, second})
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="TM5-700 中國象棋機器人專題網站">
+  <title>{% block title %}TM5-700 象棋機器人{% endblock %}</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="回到首頁">
+      <span class="brand-mark">TM</span>
+      <span><strong>TM5-700 象棋機器人</strong><small>雙視角辨識 × AI 決策 × 真機控制</small></span>
+    </a>
+    <nav aria-label="主要導覽">
+      <a href="/">專題首頁</a>
+      <a href="/player">玩家介面</a>
+      <a href="/monitor">監控畫面</a>
+    </nav>
+  </header>
+  <main><p id="connectionStatus" class="error-box" role="status" hidden></p>{% block content %}{% endblock %}</main>
+  <footer>
+    <span>TM5-700 中國象棋機器人專題團隊</span>
+    <span>真機危險狀況請使用實體 Emergency Stop</span>
+  </footer>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

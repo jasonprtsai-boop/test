@@ -1,5 +1,0 @@
-numpy
-opencv-python
-ultralytics==8.4.120
-pillow
-requests
