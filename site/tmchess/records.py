@@ -9,7 +9,7 @@ import math
 import threading
 import time
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +89,7 @@ class GameRecordWriter:
         self.root = root.resolve()
         self.games_root = games_root.resolve() if games_root is not None else None
         self._battle_ids: dict[str, str] = {}
+        self._record_names: dict[str, str] = {}
         self._battle_heads: dict[str, dict[str, Any]] = {}
         self._condition = threading.Condition()
         self._pending: dict[str, dict[str, Any]] = {}
@@ -109,7 +110,17 @@ class GameRecordWriter:
             raise ValueError("game id 格式錯誤。")
         battle_id = self._battle_ids.get(game_id)
         directory = self.root / "整場對戰" if battle_id else self.root
-        path = (directory / f"{battle_id or game_id}.xlsx").resolve()
+        identity = battle_id or game_id
+        prefix = self._record_names.get(identity, "")
+        filename = f"{prefix}{identity}"
+        if prefix:
+            try:
+                stamp, suffix = identity.split("-", 1)
+                local = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ") + timedelta(hours=8)
+                filename = f"{prefix}{local:%Y-%m-%d_%H-%M-%S}_{suffix}"
+            except ValueError:
+                pass
+        path = (directory / f"{filename}.xlsx").resolve()
         if path.parent != directory:
             raise ValueError("game id 路徑無效。")
         return path
@@ -126,6 +137,11 @@ class GameRecordWriter:
                 if not isinstance(battle_id, str) or not GAME_ID_PATTERN.fullmatch(battle_id):
                     raise ValueError("battle id 格式錯誤。")
                 self._battle_ids[game_id] = battle_id
+                if "record_name" in payload:
+                    name = str(payload.get("record_name") or "")[:40]
+                    name = "".join(c if c.isalnum() or c in " -_" else "_" for c in name).strip(" .")
+                    self._record_names.setdefault(battle_id, f"{name or '象棋對戰'}_")
+
                 previous = self._battle_heads.get(battle_id, {})
                 rank = lambda p: (p.get('segment_index', 1), p.get('saved_at') or '')
                 if not previous or rank(snapshot) >= rank(previous):
@@ -526,13 +542,13 @@ class GameRecordWriter:
                 item.get("fen_error") or "—",
                 item.get("capture_id") or "—",
                 ", ".join(item.get("vision_repaired_cells", [])) or "—",
-                _metric(item, "capture_seconds"),
-                _metric(item, "vision_processing_seconds"),
-                _metric(item, "vision_total_seconds"),
+                _metric(item, "capture_seconds", applicable=item.get("confirmation_method") != "motion_completed"),
+                _metric(item, "vision_processing_seconds", applicable=item.get("confirmation_method") != "motion_completed"),
+                _metric(item, "vision_total_seconds", applicable=item.get("confirmation_method") != "motion_completed"),
                 _metric(item, "legality_seconds"),
                 _metric(item, "engine_seconds", applicable=item.get("actor") == "ai"),
                 _metric(item, "robot_seconds", applicable=item.get("actor") == "ai"),
-                _metric(item, "verification_seconds", applicable=item.get("actor") == "ai"),
+                _metric(item, "verification_seconds", applicable=item.get("actor") == "ai" and item.get("confirmation_method") != "motion_completed"),
                 _metric(item, "turn_seconds"),
                 _metric(item, "motion_sequence", applicable=item.get("actor") == "ai"),
                 item.get("move_attempt_id") or "未記錄", _datetime_value(item.get("turn_started_at")) or "未記錄",

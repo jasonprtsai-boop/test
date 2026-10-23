@@ -76,10 +76,10 @@ class BoardMatrixInspectionTests(unittest.TestCase):
 
         self.assertEqual(robot.gripper, [False])
         self.assertEqual([move[0][2] for move in robot.moves], [
-            525.0, 525.0, 525.0,
+            420.0, 420.0, 420.0,
             380.0, 340.0, 300.0, 380.0,
             380.0, 340.0, 300.0, 380.0,
-            525.0,
+            420.0,
         ])
         inspection_moves = [move for move in robot.moves if move[0][2] == 300.0]
         self.assertEqual([move[1] for move in inspection_moves], [5, 5])

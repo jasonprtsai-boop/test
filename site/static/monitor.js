@@ -46,7 +46,8 @@
     byId("preflightStatus").textContent = preflightReady ? "全部通過" : "尚未就緒";
     byId("preflightStatus").classList.toggle("error", !preflightReady);
     const preflightList = byId("preflightList");
-    preflightList.replaceChildren(...checks.map(check => {
+    const routine = new Set(["base_tcp_runtime_confirmation", "vision_runtime", "engine_runtime", "listen_runtime", "disk_space"]);
+    const checkItem = check => {
       const item = document.createElement("li");
       item.className = check.ok ? "ok" : "failed";
       const status = document.createElement("span");
@@ -59,11 +60,13 @@
       detail.append(label, description);
       item.append(status, detail);
       return item;
-    }));
+    };
+    preflightList.replaceChildren(...checks.filter(check => routine.has(check.key) || !check.ok).map(checkItem));
+    byId("preflightDetails").replaceChildren(...checks.filter(check => !routine.has(check.key) && check.ok).map(checkItem));
     byId("preflightTime").textContent = state.preflight?.checked_at ?
       `最後檢查：${TMChess.formatTime(state.preflight.checked_at)}` : "尚未執行預檢";
     const processing = state.vision.status === "processing";
-    byId("visionStatus").textContent = processing ? "辨識處理中 · 保留上一組" : state.vision.capture_id ? "已完成" : "尚無影像";
+    byId("visionStatus").textContent = processing ? "辨識處理中" : state.vision.status === "error" ? "辨識失敗 · 顯示最近標註影像" : state.vision.capture_id ? "已完成" : "尚無影像";
     setImage("v1Image", "v1Empty", state.vision.v1_url, state.vision.capture_id);
     setImage("v2Image", "v2Empty", state.vision.v2_url, state.vision.capture_id);
     lastCapture = state.vision.capture_id;
@@ -77,6 +80,7 @@
     byId("poseTime").textContent = state.robot.pose_updated_at ? `最後更新：${TMChess.formatTime(state.robot.pose_updated_at)}` : "尚未收到 Pose";
     byId("currentAction").textContent = state.robot.current_action || "—";
     byId("nextAction").textContent = state.robot.next_action || "—";
+    byId("recordDestination").textContent = state.game?.record_path ? `儲存位置：${state.game.record_path}` : "尚未建立對戰檔案";
     const recordReady = Boolean(state.game?.record_ready);
     const recordId = state.game?.id;
     byId("recordDownload").hidden = !recordId;

@@ -1,9 +1,5 @@
 (() => {
   const setupSection = document.querySelector("#setupSection");
-  const resumeSection = document.querySelector("#resumeSection");
-  const resumeInfo = document.querySelector("#resumeInfo");
-  const resumeActorChoices = document.querySelector("#resumeActorChoices");
-  const resumeButton = document.querySelector("#resumeButton");
   const lastResultSection = document.querySelector("#lastResultSection");
   const lastResultMessage = document.querySelector("#lastResultMessage");
   const currentBoardButton = document.querySelector("#currentBoardButton");
@@ -27,10 +23,9 @@
   const blackWin = document.querySelector("#blackWin");
   const analysisLines = document.querySelector("#analysisLines");
   let pending = false;
-  let resumeSelectionInitialized = false;
+  let suggestedGame = null;
   let latestState = null;
   let requestError = null;
-
   function percent(value) {
     return `${(Number(value || 0) / 10).toFixed(1)}%`;
   }
@@ -106,27 +101,20 @@
       const label = state.phase === "FINISHED" ? "上一局已結束" : "上一局已停止";
       lastResultMessage.textContent = `${label}：${state.message || "未提供原因。"}`;
     }
-    resumeSection.hidden = !resumeAvailable;
-    if (resumeAvailable) {
-      const savedTurn = state.resume.current_turn === "ai" ? "AI" :
-        state.resume.current_turn === "player" ? "玩家" : "未確認";
-      const fixedTurnMode = ["engine_vs_engine", "analysis"].includes(state.resume.game_mode);
-      const modeLabel = state.resume.game_mode === "engine_vs_engine" ? "AI 對 AI" :
-        state.resume.game_mode === "analysis" ? "雙人分析" : "玩家對 AI";
-      resumeActorChoices.hidden = fixedTurnMode;
-      resumeInfo.textContent = fixedTurnMode ?
-        `上一局：${state.resume.game_id || "—"}（${modeLabel}），將依保存的行棋方繼續。` :
-        `上一局：${state.resume.game_id || "—"}，保存時回合：${savedTurn}。請依實體棋盤選擇目前回合。`;
-      if (!resumeSelectionInitialized) {
-        const suggested = state.resume.current_turn === "ai" ? "ai" : "player";
-        const input = document.querySelector(`input[name='resumeActor'][value='${suggested}']`);
-        if (input) input.checked = true;
-        resumeSelectionInitialized = true;
-      }
-    } else {
-      resumeActorChoices.hidden = false;
-      resumeSelectionInitialized = false;
+    if (state.resume?.available && suggestedGame !== state.resume.game_id) {
+      suggestedGame = state.resume.game_id;
+      const savedMode = state.resume.game_mode;
+      const modeInput = document.querySelector(`input[name='gameMode'][value='${["engine_vs_engine", "analysis"].includes(savedMode) ? savedMode : "human_red"}']`);
+      if (modeInput) modeInput.checked = true;
+      updateTurnLabels();
+      const actor = state.resume.side_to_move === "b" ? "ai" : "player";
+      const actorInput = document.querySelector(`input[name='currentBoardActor'][value='${actor}']`);
+      if (actorInput) actorInput.checked = true;
     }
+    const record = state.game || {};
+    document.querySelector("#recordDestination").textContent = record.record_path ?
+      `Excel 儲存位置：${record.record_path}（${record.record_status?.error || record.record_status?.last_error ? "更新失敗" : record.record_status?.pending ? "更新中" : record.record_ready ? "已建立" : "準備建立"}）` :
+      "開始對戰後顯示 Excel 儲存位置。";
     const sideLabel = state.side_to_move === "w" ? "紅方" : state.side_to_move === "b" ? "黑方" : "—";
     const controller = state.controllers?.[state.side_to_move];
     const controllerLabel = controller === "human" ? "玩家" : controller === "engine" ? "Pikafish" : "";
@@ -137,11 +125,12 @@
     startButton.disabled = pending || !state.controls.can_start;
     currentBoardButton.disabled = pending || !state.controls.can_start_current;
     document.querySelector("#continuationMode").disabled = pending || !state.controls.can_start_current;
-    resumeButton.disabled = pending || !state.controls.can_resume;
     startButton.textContent = state.preflight.ready ? "從標準開局開始" : "系統準備中…";
-    currentBoardButton.textContent = state.preflight.ready ? "辨識目前棋盤並開始" : "系統準備中…";
+    currentBoardButton.textContent = state.preflight.ready ? "偵測目前棋盤" : "系統準備中…";
     const runtimePending = state.preflight.checks.some(check => check.key === "runtime_pending");
-    setupMessage.textContent = state.preflight.ready ? "選擇開始方式後即可進行。" :
+    setupMessage.textContent = state.robot?.motion_may_continue ?
+      "上次中斷後 Robot 狀態尚未確認。請由現場操作員確認 Robot 已完全停止，再到「系統監控」按「確認 Robot 已停止」。" :
+      state.preflight.ready ? "選擇開始方式後即可進行。" :
       runtimePending || !state.preflight.checked_at ? "系統準備中，請稍候。" : "系統尚未就緒，請通知操作人員。";
     doneButton.disabled = pending || !state.controls.can_player_done;
     doneButton.textContent = state.game_mode === "analysis" ? "本方完成" : "玩家完成";
@@ -152,12 +141,9 @@
     retryButton.hidden = !state.controls.can_retry;
     stopButton.disabled = !state.controls.can_stop;
     document.querySelectorAll("input[name='gameMode']").forEach(input => {
-      input.disabled = pending || !state.controls.can_start;
+      input.disabled = pending || !(state.controls.can_start || state.controls.can_start_current);
     });
-    document.querySelectorAll("input[name='resumeActor']").forEach(input => {
-      input.disabled = pending || !state.controls.can_resume;
-    });
-    document.querySelectorAll("input[name='currentPlayerColor'], input[name='currentBoardActor']").forEach(input => {
+    document.querySelectorAll("input[name='currentBoardActor']").forEach(input => {
       input.disabled = pending || !state.controls.can_start_current;
     });
     const visibleError = state.error ? `${state.error.code}：${state.error.message}` : requestError;
@@ -193,21 +179,28 @@
     }
   }
 
+  function updateTurnLabels() {
+    const human = document.querySelector("input[name='gameMode']:checked").value === "human_red";
+    document.querySelector("#currentRedLabel").textContent = human ? "輪到玩家（紅方）" : "輪到紅方";
+    document.querySelector("#currentBlackLabel").textContent = human ? "輪到機械手臂（黑方）" : "輪到黑方";
+  }
+  document.querySelectorAll("input[name='gameMode']").forEach(input => input.addEventListener("change", updateTurnLabels));
   startButton.addEventListener("click", () => command("/api/game/start-mode", {
-    mode: document.querySelector("input[name='gameMode']:checked").value
+    mode: document.querySelector("input[name='gameMode']:checked").value,
+    record_name: document.querySelector("#recordName").value
   }));
   currentBoardButton.addEventListener("click", () => command("/api/game/start-current", {
-    player_color: document.querySelector("input[name='currentPlayerColor']:checked").value,
+    player_color: "red",
+    mode: document.querySelector("input[name='gameMode']:checked").value,
     current_actor: document.querySelector("input[name='currentBoardActor']:checked").value,
-    continuation: document.querySelector("#continuationMode").value
-  }));
-  resumeButton.addEventListener("click", () => command("/api/game/resume", {
-    current_actor: document.querySelector("input[name='resumeActor']:checked").value
+    continuation: document.querySelector("#continuationMode").value,
+    record_name: document.querySelector("#recordName").value
   }));
   doneButton.addEventListener("click", () => command("/api/game/player-done"));
   hintButton.addEventListener("click", () => command("/api/game/hint"));
   executeEngineButton.addEventListener("click", () => command("/api/game/execute-engine"));
   retryButton.addEventListener("click", () => command("/api/game/retry"));
+
   stopButton.addEventListener("click", () => command("/api/game/stop"));
   // Opening a view must never detach an active or resumable game.
   TMChess.connect(render);

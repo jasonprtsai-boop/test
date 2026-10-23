@@ -28,9 +28,25 @@ class VisionMappingTests(unittest.TestCase):
         self.assertEqual(board[1][0], 0)
 
     def test_v2_maps_into_main_board(self):
-        detection = {"piece": 14, "confidence": .9, "cx": 1252.0, "cy": 929.0}
+        detection = {"piece": 14, "confidence": .9,
+                     "cx": CONFIG.vision.v2_col_x[0], "cy": CONFIG.vision.v2_row_y[0]}
         mapped = self.processor._map_v2([detection], CONFIG.vision.v2_reference)
         self.assertEqual(mapped[(1, 0)], 14)
+
+    def test_translated_board_captures_reconstruct_standard_start(self):
+        # Actual YOLO detections from three failed starts, not ideal grid centers.
+        fixtures = json.loads(
+            (Path(__file__).parent / "fixtures" / "translated_board_detections.json")
+            .read_text(encoding="utf-8")
+        )
+        for capture in fixtures:
+            with self.subTest(capture=capture["capture"]):
+                board = self.processor._map_v1(capture["v1"], tuple(capture["size"]))
+                for (row, col), piece in self.processor._map_v2(
+                    capture["v2"], tuple(capture["size"])
+                ).items():
+                    board[row][col] = piece
+                self.assertEqual(board, standard_starting_board())
 
     def test_highest_confidence_wins_collision(self):
         low = {"piece": 14, "confidence": .5, "cx": 1355.5, "cy": 155.0}

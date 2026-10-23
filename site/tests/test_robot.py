@@ -318,8 +318,8 @@ class RobotProtocolTests(unittest.TestCase):
 
         source_z = [pose[2] for pose in adapter.poses if pose[:2] == (10.0, 20.0)]
         destination_z = [pose[2] for pose in adapter.poses if pose[:2] == (30.0, 40.0)]
-        self.assertEqual(source_z, [525.0, 355.0, 288.0, 355.0, 525.0])
-        self.assertEqual(destination_z, [525.0, 355.0, 288.0, 355.0, 525.0])
+        self.assertEqual(source_z, [420.0, 355.0, 288.0, 355.0, 420.0])
+        self.assertEqual(destination_z, [420.0, 355.0, 288.0, 355.0, 420.0])
 
     def test_safe_plane_entry_lifts_before_changing_orientation(self):
         class RecordingAdapter(TMRobotAdapter):
@@ -333,8 +333,8 @@ class RobotProtocolTests(unittest.TestCase):
         current = (250.0, -50.0, 300.0, 170.0, 5.0, 45.0)
         adapter._enter_safe_plane(object(), current, threading.Event())
 
-        self.assertEqual(adapter.poses[0], (250.0, -50.0, 525.0, 170.0, 5.0, 45.0))
-        self.assertEqual(adapter.poses[1], (250.0, -50.0, 525.0, -180.0, 0.0, 80.0))
+        self.assertEqual(adapter.poses[0], (250.0, -50.0, 420.0, 170.0, 5.0, 45.0))
+        self.assertEqual(adapter.poses[1], (250.0, -50.0, 420.0, -180.0, 0.0, 80.0))
 
     def test_camera_pose_enters_safe_plane_before_board_transfer(self):
         class RecordingAdapter(TMRobotAdapter):
@@ -349,8 +349,8 @@ class RobotProtocolTests(unittest.TestCase):
         current = (330.08, 80.60, 578.92, -180.0, 0.0, 80.0)
         adapter._enter_safe_plane(object(), current, threading.Event())
         adapter._transfer(object(), (501.324, -198.949), (278.075, -65.085))
-        self.assertEqual(adapter.poses[0], (330.08, 80.60, 525.0, -180.0, 0.0, 80.0))
-        self.assertEqual(adapter.poses[1], (501.324, -198.949, 525.0, -180.0, 0.0, 80.0))
+        self.assertEqual(adapter.poses[0], (330.08, 80.60, 420.0, -180.0, 0.0, 80.0))
+        self.assertEqual(adapter.poses[1], (501.324, -198.949, 420.0, -180.0, 0.0, 80.0))
 
     def test_safe_plane_failure_prevents_board_transfer(self):
         class FakeSocket:

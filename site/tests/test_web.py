@@ -7,13 +7,21 @@ from pathlib import Path
 
 from tmchess.config import CONFIG, SITE_ROOT
 from tmchess.service import GameService
-from tmchess.vision import DualViewInbox
+from tmchess.vision import BoardObservationError, CaptureResult, DualViewInbox
 from tmchess.web import create_ui_app, create_vision_app
 from tests.fakes import FakeEngine, FakePreflight, FakeRobot, FakeVision, make_service, starting_board, wait_for
 from tmchess.state import Phase
 
 
 class WebTests(unittest.TestCase):
+    def test_post_move_review_api_and_panel_are_removed(self):
+        response = self.client.post('/api/game/review', json={'action': 'confirm', 'confirmed': True})
+        self.assertEqual(response.status_code, 404)
+        page = self.client.get('/player').get_data(as_text=True)
+        self.assertNotIn('id="reviewPanel"', page)
+        self.assertNotIn('id="confirmMoveButton"', page)
+        self.assertNotIn('review', self.service.get_state())
+
     def setUp(self):
         (SITE_ROOT / "runtime").mkdir(exist_ok=True)
         self.temp = tempfile.TemporaryDirectory(dir=SITE_ROOT / "runtime")
@@ -112,7 +120,7 @@ class WebTests(unittest.TestCase):
         self.assertNotIn("真機預檢", player)
         self.assertNotIn("YOLO", player)
         self.assertNotIn('id="preflightList"', player)
-        self.assertIn('id="resumeButton"', player)
+        self.assertNotIn('id="resumeButton"', player)
         self.assertIn('id="lastResultSection"', player)
         self.assertIn('id="lastResultMessage"', player)
         self.assertIn('id="currentBoardButton"', player)
@@ -120,7 +128,7 @@ class WebTests(unittest.TestCase):
         self.assertIn('id="executeEngineButton"', player)
         self.assertIn('id="analysisPanel"', player)
         self.assertIn('name="gameMode"', player)
-        self.assertIn("從目前棋盤開始", player)
+        self.assertIn("偵測目前棋盤", player)
         self.assertIn("從頭開始", player)
         self.assertIn('id="preflightList"', monitor)
         self.assertIn('id="preflightStatus"', monitor)
@@ -183,6 +191,23 @@ class WebTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.get_json()["error"]["code"], "invalid_player_color")
+
+    def test_current_board_api_accepts_analysis_mode_without_color_selection(self):
+        response = self.client.post("/api/game/start-current", json={
+            "mode": "analysis", "current_actor": "ai", "continuation": "new",
+        })
+        self.assertEqual(response.status_code, 202)
+        state = wait_for(self.service, Phase.PLAYER_TURN.value)
+        self.assertEqual(state["game_mode"], "analysis")
+        self.assertEqual(state["side_to_move"], "b")
+        self.assertEqual(state["controllers"], {"w": "human", "b": "human"})
+
+    def test_current_board_api_rejects_unknown_mode(self):
+        response = self.client.post("/api/game/start-current", json={
+            "mode": "unknown", "current_actor": "player",
+        })
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["error"]["code"], "invalid_game_mode")
 
     def test_current_board_api_starts_from_captured_position(self):
         response = self.client.post(
@@ -260,6 +285,31 @@ class WebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.mimetype, "image/jpeg")
         response.close()
+
+    def test_failed_board_validation_still_exposes_both_annotated_images(self):
+        def failed_capture(capture_id, trigger):
+            trigger()
+            game_id = self.service.get_state()["game"]["id"]
+            directory = self.config.capture_root / game_id
+            directory.mkdir(parents=True, exist_ok=True)
+            paths = [directory / f"R001_C001_current_board_{capture_id}_{view}_yolo.jpg"
+                     for view in ("v1", "v2")]
+            for path in paths:
+                path.write_bytes(b"\xff\xd8\xff\xd9")
+            result = CaptureResult(capture_id, starting_board(), *paths, [[0.9] * 9 for _ in range(10)])
+            raise BoardObservationError("兵辨識到 6 枚", result)
+
+        self.service.vision.capture = failed_capture
+        self.service.submit_start_current("red", "player", continuation="new")
+        state = wait_for(self.service, Phase.ERROR.value)
+        self.assertEqual(state["vision"]["status"], "error")
+        self.assertIsNone(self.service._board)
+        self.assertEqual(self.service.robot.moves, [])
+        self.assertTrue(state["vision"]["capture_id"])
+        for view in ("v1", "v2"):
+            with self.client.get(state["vision"][f"{view}_url"]) as response:
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.mimetype, "image/jpeg")
 
     def test_media_route_serves_flat_round_filename(self):
         capture_id = "20261010T010203Z-12345678"

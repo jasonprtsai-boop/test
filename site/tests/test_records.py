@@ -1,12 +1,15 @@
 import json
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
+from dataclasses import replace
 from pathlib import Path
 
 from openpyxl import load_workbook
 
 from tmchess.board import Move, apply_move
-from tmchess.config import SITE_ROOT
+from tmchess.config import CONFIG, SITE_ROOT
 from tmchess.records import GameRecordWriter
 from tmchess.session import GameSessionStore
 from tmchess.state import Phase
@@ -31,6 +34,7 @@ class GameRecordTests(unittest.TestCase):
             [ai_move],
             session_store=self.sessions,
             record_writer=self.records,
+            config=replace(CONFIG, safety=replace(CONFIG.safety, hardware_enabled=False)),
         )
 
     def tearDown(self):
@@ -38,11 +42,29 @@ class GameRecordTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_each_game_gets_detailed_workbook_without_blocking_robot_flow(self):
-        self.service.submit_start("player")
-        wait_for(self.service, Phase.PLAYER_TURN.value)
-        self.service.submit_player_done()
-        state = wait_for(self.service, Phase.PLAYER_TURN.value)
-        self.assertTrue(self.records.flush())
+        writing = threading.Event()
+        release = threading.Event()
+        original_write = self.records._write
+
+        def blocked_write(payload):
+            writing.set()
+            if not release.wait(timeout=30):
+                raise TimeoutError("test did not release workbook writer")
+            return original_write(payload)
+
+        # Prove independence from workbook I/O, rather than racing Excel's
+        # formatting and disk work against an arbitrary turn deadline.
+        with patch.object(self.records, "_write", side_effect=blocked_write):
+            try:
+                self.service.submit_start("player")
+                wait_for(self.service, Phase.PLAYER_TURN.value)
+                self.assertTrue(writing.wait(timeout=5))
+                self.service.submit_player_done()
+                state = wait_for(self.service, Phase.PLAYER_TURN.value)
+                self.assertFalse(release.is_set())
+            finally:
+                release.set()
+            self.assertTrue(self.records.flush())
 
         game_id = state["game"]["id"]
         path = self.records.path_for(game_id)
@@ -59,8 +81,8 @@ class GameRecordTests(unittest.TestCase):
             self.assertTrue(all(row[20] and row[21] for row in moves))
             self.assertEqual([row[1] for row in moves], [1, 1])
             captures = list(workbook["拍攝紀錄"].iter_rows(min_row=4, values_only=True))
-            self.assertEqual(len(captures), 2)
-            self.assertEqual([row[4] for row in captures], ["玩家走子", "AI 落子驗證"])
+            self.assertEqual(len(captures), 1)
+            self.assertEqual([row[4] for row in captures], ["玩家走子"])
             motions = list(workbook["Robot動作"].iter_rows(min_row=4, values_only=True))
             self.assertEqual(len(motions), 1)
             self.assertEqual(motions[0][6], "a6a5")
@@ -80,7 +102,7 @@ class GameRecordTests(unittest.TestCase):
             )
             self.assertEqual(saved["schema_version"], 3)
             self.assertEqual(len(saved["move_history"]), 2)
-            self.assertEqual(len(saved["capture_history"]), 2)
+            self.assertEqual(len(saved["capture_history"]), 1)
             self.assertEqual(len(saved["motion_history"]), 1)
             self.assertTrue(saved["move_history"][0]["fen_before"])
             self.assertTrue(saved["move_history"][0]["fen_after"])

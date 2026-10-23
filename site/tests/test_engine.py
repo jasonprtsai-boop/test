@@ -5,7 +5,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from tmchess.board import apply_move
+from tmchess.board import apply_move, standard_starting_board
 from tmchess.config import CONFIG, SITE_ROOT
 from tmchess.engine import PikafishEngine, parse_analysis_line
 from tmchess.web import build_runtime
@@ -13,6 +13,22 @@ from tests.fakes import starting_board
 
 
 class PikafishIntegrationTests(unittest.TestCase):
+    def test_invalid_pawn_position_reports_engine_reason(self):
+        board = standard_starting_board()
+        board[3][0], board[4][1] = 0, 14
+        engine = PikafishEngine(CONFIG.engine)
+        self.addCleanup(engine.stop)
+        with self.assertRaisesRegex(RuntimeError, r"兵／卒位置不合法.*WHITE pawn"):
+            engine.suggest(board, "b")
+        # A rejected position must not poison the next valid search.
+        self.assertIsNotNone(engine.suggest(standard_starting_board(), "b"))
+
+    def test_wait_for_reports_critical_error(self):
+        engine = PikafishEngine(CONFIG.engine)
+        engine._lines.put("info string CRITICAL ERROR: invalid configuration")
+        with self.assertRaisesRegex(RuntimeError, "invalid configuration"):
+            engine._wait_for("readyok")
+
     def test_parses_multipv_wdl_and_mate_analysis_lines(self):
         line = parse_analysis_line(
             "info depth 12 seldepth 18 multipv 2 score cp -23 lowerbound "

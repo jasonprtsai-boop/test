@@ -27,6 +27,7 @@ from .board import (
     position_to_uci,
     standard_starting_board,
     validate_board,
+    validate_pawn_positions,
 )
 from .config import AppConfig
 from .records import GameRecordWriter
@@ -89,7 +90,7 @@ class PreflightChecker:
         c = self.config
         checks: list[dict[str, Any]] = []
         self._check(checks, "hardware_enabled", "真機動作開關", c.safety.hardware_enabled,
-                    "已啟用" if c.safety.hardware_enabled else "HARDWARE_ENABLED 預設關閉")
+                    "已啟用" if c.safety.hardware_enabled else "HARDWARE_ENABLED 已關閉")
         missing = c.motion.missing_fields()
         self._check(checks, "coordinates", "棋盤、姿態、Z 與落子箱座標", not missing,
                     "完整" if not missing else "缺少：" + ", ".join(missing))
@@ -554,10 +555,13 @@ class GameService:
         }
         game_id = snapshot.get("game", {}).get("id")
         record_ready = False
+        snapshot["game"]["record_path"] = None
         record_status: dict[str, Any] = {}
         if self.record_writer is not None and isinstance(game_id, str):
             try:
-                record_ready = self.record_writer.path_for(game_id).is_file()
+                record_path = self.record_writer.path_for(game_id)
+                snapshot["game"]["record_path"] = str(record_path)
+                record_ready = record_path.is_file()
                 record_status = self.record_writer.status_for(game_id)
             except (ValueError, OSError) as exc:
                 record_ready = False
@@ -686,15 +690,15 @@ class GameService:
         mode = "human_red" if first_actor == "player" else "human_black"
         return self._submit_start_mode(mode)
 
-    def submit_start_mode(self, mode: str) -> dict[str, Any]:
+    def submit_start_mode(self, mode: str, *, record_name: str = "") -> dict[str, Any]:
         self._require(
             mode in self.START_MODES,
             "invalid_game_mode",
             "mode 必須是 human_red、human_black、engine_vs_engine 或 analysis。",
         )
-        return self._submit_start_mode(mode)
+        return self._submit_start_mode(mode, record_name=record_name)
 
-    def _submit_start_mode(self, mode: str) -> dict[str, Any]:
+    def _submit_start_mode(self, mode: str, *, record_name: str = "") -> dict[str, Any]:
         controllers, execution_mode, first_actor = self.START_MODES[mode]
         with self._lock:
             state = self.get_state()
@@ -708,11 +712,10 @@ class GameService:
             self._side_to_move = "w"
             self._execution_mode = execution_mode
             human_sides = [side for side, controller in controllers.items() if controller == "human"]
-            engine_sides = [side for side, controller in controllers.items() if controller == "engine"]
             self._player_side = human_sides[0] if human_sides else "w"
-            self._ai_side = engine_sides[0] if engine_sides else "b"
+            self._ai_side = self._other_side(self._player_side)
             try:
-                self._begin_new_game(mode)
+                self._begin_new_game(mode, record_name=record_name)
                 red_is_human = controllers["w"] == "human"
                 self.store.update(lambda current: (
                     current.update(
@@ -747,7 +750,7 @@ class GameService:
             self._queue.put(("start", mode))
         return self.get_state()
 
-    def submit_start_current(self, player_color: str, current_actor: str, *, continuation: str = "auto") -> dict[str, Any]:
+    def submit_start_current(self, player_color: str, current_actor: str, *, continuation: str = "auto", record_name: str = "", mode: str | None = None) -> dict[str, Any]:
         self._require(continuation in ("auto", "rebaseline", "new"), "invalid_continuation", "恢復方式必須是 auto、rebaseline 或 new。")
         self._require(
             player_color in ("red", "black"),
@@ -759,6 +762,10 @@ class GameService:
             "invalid_current_actor",
             "current_actor 必須是 player 或 ai。",
         )
+        self._require(mode is None or mode in ("human_red", "engine_vs_engine", "analysis"),
+                      "invalid_game_mode", "目前棋盤模式必須是 human_red、engine_vs_engine 或 analysis。")
+        if mode is not None:
+            self._require(player_color == "red", "invalid_player_color", "新模式固定以紅方作為玩家方。")
         with self._lock:
             state = self.get_state()
             self._require(
@@ -773,7 +780,7 @@ class GameService:
                 self._lineage(previous)
             if previous and continuation == "auto" and self._has_complete_replay_context(previous):
                 requested_player = "w" if player_color == "red" else "b"
-                self._require(previous.get("player_side") == requested_player, "recovery_color_conflict",
+                self._require(mode is not None or previous.get("player_side") == requested_player, "recovery_color_conflict",
                               "接續對戰不能更換玩家棋色；請保留原棋色或明確選擇全新對戰。")
                 self._resume_snapshot = copy.deepcopy(previous)
                 # Reuse the existing recovery path and its pending-move guards.
@@ -786,23 +793,25 @@ class GameService:
             self._player_side, self._ai_side = (
                 ("w", "b") if player_color == "red" else ("b", "w")
             )
-            self._controllers = {
-                self._player_side: "human",
-                self._ai_side: "engine",
-            }
+            selected_mode = mode or (previous.get("game_mode") if previous and previous.get("game_mode") in ("engine_vs_engine", "analysis") else "current_board")
+            if selected_mode in self.START_MODES:
+                controllers, self._execution_mode, _ = self.START_MODES[selected_mode]
+                self._controllers = dict(controllers)
+            else:
+                self._controllers = {self._player_side: "human", self._ai_side: "engine"}
+                self._execution_mode = "automatic"
             self._side_to_move = self._player_side if current_actor == "player" else self._ai_side
-            self._execution_mode = "automatic"
             # first_actor remains the persisted source of the red/black side
             # assignment.  For a mid-game baseline it does not imply move 1.
             first_actor = "player" if player_color == "red" else "ai"
             try:
-                self._begin_new_game("current_board", previous=previous)
+                self._begin_new_game(selected_mode, previous=previous, record_name=record_name)
                 self.store.update(lambda current: (
                     current.update(
                         phase=Phase.VERIFYING.value,
                         first_actor=first_actor,
                         current_turn=current_actor,
-                        game_mode="current_board",
+                        game_mode=selected_mode,
                         controllers=dict(self._controllers),
                         side_to_move=self._side_to_move,
                         execution_mode=self._execution_mode,
@@ -1115,7 +1124,7 @@ class GameService:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         return f"{stamp}-{uuid.uuid4().hex[:8]}"
 
-    def _begin_new_game(self, game_mode: str, *, previous: dict[str, Any] | None = None) -> None:
+    def _begin_new_game(self, game_mode: str, *, previous: dict[str, Any] | None = None, record_name: str = "") -> None:
         lineage = self._lineage(previous) if previous else None
         while True:
             game_id = self._capture_id()
@@ -1137,6 +1146,10 @@ class GameService:
             "history_gap": bool(previous and previous.get("board") is not None),
             "battle_started_at": (previous.get("battle_started_at") or previous.get("started_at")) if previous else utc_now(),
         }
+        if previous is None:
+            self._battle_metadata["record_name"] = record_name.strip()[:40]
+        elif "record_name" in previous:
+            self._battle_metadata["record_name"] = previous["record_name"]
         self._last_snapshot = None
         self._game_started_at = utc_now()
         self._game_mode = game_mode
@@ -1169,7 +1182,7 @@ class GameService:
             raise ValueError('保存的上一個片段編號錯誤。')
         if type(index) is not int or index < 1:
             raise ValueError('保存的片段序號錯誤。')
-        return dict(battle_id=battle_id, parent_game_id=parent, segment_index=index,
+        return dict(**({"record_name": str(snapshot.get("record_name") or "")[:40]} if "record_name" in snapshot else {}), battle_id=battle_id, parent_game_id=parent, segment_index=index,
                     segment_reason=snapshot.get('segment_reason', 'legacy_segment'),
                     history_gap=bool(snapshot.get('history_gap', False)),
                     battle_started_at=snapshot.get('battle_started_at') or snapshot.get('started_at'))
@@ -1366,6 +1379,7 @@ class GameService:
 
     def _record_settings(self) -> dict[str, Any]:
         return {
+            "post_move_image_verification": False,
             "hardware_enabled": self.config.safety.hardware_enabled,
             "engine_depth": self.config.engine.depth,
             "engine_movetime_ms": self.config.engine.movetime_ms,
@@ -1413,6 +1427,11 @@ class GameService:
             raise ValueError("保存的對局模式與控制者不一致。")
         player_side = snapshot.get("player_side", "w")
         ai_side = snapshot.get("ai_side", "b")
+        # Legacy dual-engine starts stored both role aliases as red. The
+        # controllers and side_to_move above remain authoritative in this mode.
+        if mode == "engine_vs_engine" and player_side == ai_side == "w":
+            snapshot = copy.deepcopy(snapshot)
+            snapshot["ai_side"] = ai_side = "b"
         if player_side not in ("w", "b") or ai_side not in ("w", "b") or player_side == ai_side:
             raise ValueError("保存的玩家與 AI 棋色無效。")
         controllers = snapshot.get("controllers", dict(expected_controllers[0]) if expected_controllers else {player_side: "human", ai_side: "engine"})
@@ -1513,6 +1532,15 @@ class GameService:
             total_seconds=result.total_seconds, confidence_min=low, confidence_avg=average,
             confidence_max=high, detected_pieces=sum(piece != 0 for row in result.board for piece in row),
         )
+
+        # Diagnostic images exist before board validation or stationary checks.
+        # Publish them without accepting the board or marking motion complete.
+        self.store.update(lambda state: state["vision"].update(
+            capture_id=result.capture_id,
+            v1_url=f"/api/media/{result.capture_id}/v1",
+            v2_url=f"/api/media/{result.capture_id}/v2",
+            updated_at=utc_now(),
+        ))
 
     def _accept_observation(self, board: Board, status: str) -> None:
         if self._last_capture_record is not None:
@@ -1664,9 +1692,6 @@ class GameService:
             status="ready", capture_id=result.capture_id,
             active_capture_id=None,
             last_attempt_id=result.capture_id,
-            v1_url=f"/api/media/{result.capture_id}/v1",
-            v2_url=f"/api/media/{result.capture_id}/v2",
-            updated_at=utc_now(),
         ))
         return result
 
@@ -1775,18 +1800,11 @@ class GameService:
         self._perform_ai_turn()
 
     def _start_current(self, payload: tuple[str, str]) -> None:
-        player_color, current_actor = payload
         self._guard_running()
-        self._player_side, self._ai_side = (
-            ("w", "b") if player_color == "red" else ("b", "w")
-        )
-        self._controllers = {self._player_side: "human", self._ai_side: "engine"}
-        self._execution_mode = "automatic"
-        self._side_to_move = self._player_side if current_actor == "player" else self._ai_side
         result = self._capture("以目前棋盤建立對局")
         with self._lock:
             self._guard_running()
-            validate_board(result.board)
+            validate_pawn_positions(result.board)
             self._board = clone_board(result.board)
             self._initial_board = clone_board(self._board)
             self._accept_observation(self._board, 'accepted_initial_baseline')
@@ -1794,17 +1812,18 @@ class GameService:
             self._persist_session()
         if self._controllers.get(self._side_to_move) == "human":
             if not self._query_engine("has_legal_move",
-                self._board, self._player_side, **self._engine_context()
+                self._board, self._side_to_move, **self._engine_context()
             ):
                 self._update_running(lambda state: state.update(
                     phase=Phase.FINISHED.value,
                     current_turn=None,
-                    message="目前局面玩家無合法著法，AI 獲勝。",
+                    message=(f"{self._side_label(self._side_to_move)}無合法著法，{self._side_label(self._other_side(self._side_to_move))}獲勝。"
+                             if self._game_mode == "analysis" else "目前局面玩家無合法著法，AI 獲勝。"),
                     error=None,
                 ))
                 self._persist_session()
                 return
-            self._enter_player_turn("目前棋盤已建立為新基準，輪到玩家。")
+            self._enter_player_turn(f"目前棋盤已建立為新基準，輪到{self._side_label(self._side_to_move)}。")
             self._persist_session()
             return
         self._perform_ai_turn()
@@ -2098,7 +2117,7 @@ class GameService:
         self._update_running(lambda state: state["robot"].update(
             motion_may_continue=True,
             current_action="準備執行 AI 棋步",
-            next_action="完成後拍攝驗證",
+            next_action="完成後提交棋步",
         ))
         self._persist_session()
         motion_started_at = utc_now()
@@ -2141,48 +2160,17 @@ class GameService:
         self._update_running(lambda state: state["robot"].update(
             motion_may_continue=False,
             current_action="AI 棋步低階動作完成",
-            next_action="雙視角驗證盤面",
+            next_action="提交棋步並切換回合",
         ))
         self._persist_session()
-        self._verify_pending()
-
-    def _verify_pending(self) -> None:
-        self._guard_running()
-        assert self._pending_move is not None and self._pending_expected is not None
-        self._update_running(lambda state: state.update(
-            phase=Phase.VERIFYING.value, message="雙視角驗證 AI 落子…",
-        ))
-        verify_started = time.monotonic()
-        try:
-            result = self._capture("AI 落子驗證")
-        except Exception as exc:
-            self._pending_metrics["verification_seconds"] = round(time.monotonic() - verify_started, 3)
-            if self._motion_history:
-                self._motion_history[-1]["verification_status"] = "failed"
-            if self._stop_event.is_set():
-                raise
-            raise VerificationError(f"AI 落子後無法完成影像驗證：{exc}") from exc
-        self._last_observed = clone_board(result.board)
-        protected = {self._pending_move.source, self._pending_move.destination}
-        matched = self._match_expected_board(
-            self._pending_expected, result.board, result.confidence, protected
-        )
-        if matched is None:
-            self._pending_metrics["verification_seconds"] = round(time.monotonic() - verify_started, 3)
-            if self._motion_history:
-                self._motion_history[-1]["verification_status"] = "mismatch"
-            raise VerificationError("AI 落子後盤面不符合預期；pending move 尚未提交。", result.board)
-        _corrected, repaired = matched
-        self._pending_metrics["verification_seconds"] = round(time.monotonic() - verify_started, 3)
-        self._pending_metrics["repaired_cells"] = [position_to_uci(item) for item in repaired]
-        self._log_temporal_repairs("AI 落子驗證", repaired)
-        self._commit_pending_move("AI 落子與雙視角驗證完成，輪到玩家。")
+        self._commit_pending_move("AI 落子動作完成，輪到玩家。", confirmation_method="motion_completed")
 
     def _retry(self) -> None:
         self._guard_running()
         if self._pending_move is None or self._pending_expected is None or self._pending_before is None:
             raise RuntimeError("沒有保留中的 AI 著法。")
         # Re-observe first: blindly replaying a possibly completed move can pick an empty square.
+        self._last_observed = None
         result = self._capture("重試前盤面確認")
         self._last_observed = clone_board(result.board)
         protected = {self._pending_move.source, self._pending_move.destination}
@@ -2198,8 +2186,7 @@ class GameService:
             return
         if before_match is None or expected_match is not None:
             raise VerificationError(
-                "辨識盤面與落子前、預期盤面皆不一致。若保留本局，請核對辨識影像並還原落子前盤面後重新落子；"
-                "若保留目前實體盤面，請先按「停止」，再從目前棋盤建立新對局並指定行棋方。",
+                "盤面與落子前、預期盤面皆不一致。請停止流程，從現場盤面重新建立對局。",
                 result.board,
             )
         self._log_temporal_repairs("重試前盤面", before_match[1])
@@ -2207,11 +2194,12 @@ class GameService:
         self._persist_session()
         self._execute_pending(retry_pick=True)
 
-    def _commit_pending_move(self, player_message: str) -> None:
-        """Commit one verified AI move, then determine whether play can continue."""
+    def _commit_pending_move(self, player_message: str, *, confirmation_method: str = "vision") -> None:
+        """Commit an AI move after completed motion or explicit recovery observation."""
         with self._lock:
             self._guard_running()
             assert self._pending_move is not None and self._pending_expected is not None
+            self._pending_metrics["confirmation_method"] = confirmation_method
             move_side = self._side_to_move
             move = self._pending_move
             before = clone_board(self._pending_before or self._board)
@@ -2225,8 +2213,10 @@ class GameService:
             sequence = len(self._move_history) + 1
             for motion in self._motion_history:
                 if motion.get("sequence") == metrics.get("motion_sequence"):
-                    motion.update(verification_status="confirmed", committed_move_sequence=sequence,
-                                  verification_capture_id=(self._last_capture_record or {}).get("capture_id"))
+                    motion.update(verification_status="skipped" if confirmation_method == "motion_completed" else "confirmed",
+                                  committed_move_sequence=sequence,
+                                  confirmation_method=confirmation_method,
+                                  verification_capture_id=None if confirmation_method == "motion_completed" else (self._last_capture_record or {}).get("capture_id"))
             self._pending_move = self._pending_expected = self._pending_before = self._last_observed = None
             self._pending_retry_count = 0
             self._pending_metrics = {}
@@ -2241,7 +2231,7 @@ class GameService:
             ))
             self._side_to_move = self._other_side(move_side)
             self._update_running(lambda state: state.update(side_to_move=self._side_to_move))
-            # Persist the verified board before another external-engine call.
+            # Persist the committed board before another external-engine call.
             self._persist_session()
         if self._controllers.get(self._side_to_move) == "human":
             if not self._query_engine("has_legal_move",
@@ -2416,7 +2406,8 @@ class GameService:
         side = side or (self._player_side if actor == "player" else self._ai_side)
         other_side = "b" if side == "w" else "w"
         sequence = len(self._move_history) + 1
-        capture = self._last_capture_record or {}
+        image_verified = (extra or {}).get("confirmation_method") != "motion_completed"
+        capture = (self._last_capture_record or {}) if image_verified else {}
         fen_error = None
         try:
             fen_before = board_to_fen(before, side)
@@ -2461,7 +2452,7 @@ class GameService:
         if actor == "player" and payload.get("turn_seconds") is None and capture.get("started_at"):
             payload["turn_seconds"] = round((datetime.now(timezone.utc) - datetime.fromisoformat(capture["started_at"])).total_seconds(), 3)
         payload.setdefault("move_attempt_id", f"{self._game_id}:{sequence}")
-        if self._last_capture_record is not None:
+        if image_verified and self._last_capture_record is not None:
             self._last_capture_record.update(accepted_board=clone_board(after), accepted_move_sequence=sequence,
                                              accepted_uci=move.uci, acceptance_status="committed")
         return payload
@@ -2542,7 +2533,9 @@ class GameService:
                 before["phase"] == Phase.ROBOT_MOVING.value
                 and isinstance(exc, (ConnectionError, TimeoutError))
             )
-            retryable = isinstance(exc, VerificationError) and self._pending_move is not None
+            retryable = isinstance(exc, (VerificationError, BoardObservationError)) and self._pending_move is not None
+            if isinstance(exc, VerificationError) and exc.observed is not None:
+                self._last_observed = clone_board(exc.observed)
             if isinstance(exc, GripperStateUnknown):
                 code = "gripper_state_unknown"
             elif motion_uncertain:
@@ -2560,7 +2553,7 @@ class GameService:
                     next_action=(
                         "確認 Robot 完全停止與吸盤狀態後重新啟動系統"
                         if motion_uncertain else
-                        ("重新落子" if retryable else "檢查錯誤後繼續上一局")
+                        ("中斷棋步待恢復：確認盤面後重試" if retryable else "檢查錯誤後繼續上一局")
                     ),
                     motion_may_continue=motion_uncertain,
                 ),

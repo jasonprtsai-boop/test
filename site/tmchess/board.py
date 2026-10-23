@@ -87,6 +87,24 @@ def validate_board(board: Sequence[Sequence[int]]) -> None:
         raise ValueError("將帥直接照面，請檢查是否漏辨識棋子。")
 
 
+def validate_pawn_positions(board: Sequence[Sequence[int]]) -> None:
+    """Reject unreachable pawn squares before adopting a new baseline.
+
+    Domain row 0 is Red's home rank. Pawns cannot retreat or move sideways
+    before crossing the river; this does not establish full position legality.
+    """
+    validate_board(board)
+    invalid = []
+    for row in range(10):
+        for col in range(9):
+            piece = board[row][col]
+            if ((piece == 14 and (row < 3 or (row < 5 and col % 2)))
+                    or (piece == 7 and (row > 6 or (row > 4 and col % 2)))):
+                invalid.append(f"{chr(97 + col)}{row}（{PIECE_LABELS[piece]}）")
+    if invalid:
+        raise ValueError("兵／卒位於不可到達的格位：" + ", ".join(invalid) + "。請核對影像與實體盤面。")
+
+
 def board_to_fen(board: Sequence[Sequence[int]], side: str) -> str:
     validate_board(board)
     if side not in ("w", "b"):

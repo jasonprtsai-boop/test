@@ -188,15 +188,18 @@ def create_ui_app(
 
     @app.post("/api/game/start-mode")
     def game_start_mode():
-        return jsonify(service.submit_start_mode(str(body().get("mode", "")))), 202
+        value = body()
+        return jsonify(service.submit_start_mode(str(value.get("mode", "")), record_name=str(value.get("record_name", "")))), 202
 
     @app.post("/api/game/start-current")
     def game_start_current():
         value = body()
         return jsonify(service.submit_start_current(
-            str(value.get("player_color", "")),
+            str(value.get("player_color", "red")),
             str(value.get("current_actor", "")),
+            mode=str(value["mode"]) if "mode" in value else None,
             continuation=str(value.get("continuation", "auto")),
+            record_name=str(value.get("record_name", "")),
         )), 202
 
     @app.post("/api/game/player-done")

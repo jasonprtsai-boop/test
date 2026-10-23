@@ -44,6 +44,78 @@ class BattleContinuityTests(unittest.TestCase):
         wait_for(self.service, Phase.ERROR.value)
         return gid
 
+    def test_current_board_engine_mode_waits_for_confirmation_for_either_side(self):
+        for actor, side, move in (("player", "w", self.red), ("ai", "b", self.black)):
+            with self.subTest(side=side):
+                robot, _, engine = self.create([starting_board()], suggestions=[move])
+                self.service.submit_start_current("red", actor, continuation="new", mode="engine_vs_engine")
+                state = wait_for(self.service, Phase.ENGINE_READY.value)
+                self.assertEqual(state["side_to_move"], side)
+                self.assertEqual(state["controllers"], {"w": "engine", "b": "engine"})
+                self.assertEqual(state["execution_mode"], "step")
+                self.assertEqual(engine.contexts[-1][1], side)
+                self.assertEqual(robot.moves, [])
+                self.assertEqual(self.saved()["initial_side_to_move"], side)
+                self.service.close()
+                self.service = None
+
+    def test_current_board_analysis_black_turn_stays_human_after_rebaseline(self):
+        robot, _, engine = self.create([starting_board(), starting_board()])
+        self.service.submit_start_current("red", "ai", continuation="new", mode="analysis")
+        state = wait_for(self.service, Phase.PLAYER_TURN.value)
+        self.assertEqual(state["side_to_move"], "b")
+        self.assertEqual(state["controllers"], {"w": "human", "b": "human"})
+        self.assertEqual(engine.contexts[-1][1], "b")
+        self.service.submit_stop()
+        wait_for(self.service, Phase.STOPPED.value)
+        self.service.submit_start_current("red", "player", continuation="rebaseline")
+        state = wait_for(self.service, Phase.PLAYER_TURN.value)
+        self.assertEqual(state["game_mode"], "analysis")
+        self.assertEqual(state["execution_mode"], "analysis")
+        self.assertEqual(engine.suggest_calls, 0)
+        self.assertEqual(robot.moves, [])
+
+    def test_auto_recovery_keeps_saved_analysis_mode_and_black_turn(self):
+        self.create([starting_board(), starting_board()])
+        self.service.submit_start_current("red", "ai", continuation="new", mode="analysis")
+        state = wait_for(self.service, Phase.PLAYER_TURN.value)
+        game_id = state["game"]["id"]
+        self.service.submit_stop()
+        wait_for(self.service, Phase.STOPPED.value)
+        self.service.submit_start_current("red", "player", mode="human_red")
+        state = wait_for(self.service, Phase.PLAYER_TURN.value)
+        self.assertEqual(state["game"]["id"], game_id)
+        self.assertEqual(state["game_mode"], "analysis")
+        self.assertEqual(state["side_to_move"], "b")
+
+    def test_custom_record_name_survives_rebaseline_and_restart(self):
+        writer = GameRecordWriter(Path(self.tmp.name) / 'records', games_root=self.sessions.root)
+        self.create([TimeoutError('bad image'), self.after_red], record_writer=writer)
+        self.service.submit_start_mode('human_red', record_name='王同學/練習賽')
+        wait_for(self.service, Phase.PLAYER_TURN.value)
+        gid = self.service.get_state()['game']['id']
+        original = writer.path_for(gid)
+        self.assertTrue(original.name.startswith('王同學_練習賽_'))
+        self.assertEqual(original.parent, writer.root / '整場對戰')
+        self.service.submit_player_done()
+        wait_for(self.service, Phase.ERROR.value)
+        self.service.submit_start_current('red', 'player', continuation='rebaseline', record_name='不可更名')
+        wait_for(self.service, Phase.PLAYER_TURN.value)
+        payload = self.saved()
+        self.assertEqual(payload['record_name'], '王同學/練習賽')
+        self.assertEqual(writer.path_for(payload['game_id']), original)
+        self.assertEqual(self.service.get_state()['game']['record_path'], str(original))
+        self.service.close()
+        self.service = None
+        restarted = GameRecordWriter(writer.root, games_root=self.sessions.root)
+        try:
+            restarted.schedule(payload)
+            self.assertEqual(restarted.path_for(payload['game_id']), original)
+            self.assertTrue(restarted.flush())
+            self.assertTrue(original.is_file())
+        finally:
+            restarted.close()
+
     def test_current_board_after_detection_failure_recovers_same_game_and_move(self):
         self.create([TimeoutError('V2 missing'), self.after_red, self.after_black], suggestions=[self.black])
         gid = self.fail_player_capture()
@@ -52,7 +124,7 @@ class BattleContinuityTests(unittest.TestCase):
         p = self.saved()
         self.assertEqual(p['game_id'], gid)
         self.assertEqual([m['uci'] for m in p['move_history']], ['a3a4', 'a6a5'])
-        self.assertEqual(len(p['capture_history']), 3)
+        self.assertEqual(len(p['capture_history']), 2)
         self.assertEqual(len(list(self.sessions.root.iterdir())), 1)
 
     def test_explicit_rebaseline_retains_battle_identity_and_clears_old_image(self):
@@ -124,7 +196,7 @@ class BattleContinuityTests(unittest.TestCase):
         self.assertIsNotNone(ai['turn_seconds'])
         self.assertTrue(ai['move_attempt_id'])
         self.assertTrue(p['engine_history'])
-        self.assertEqual(p['motion_history'][0]['verification_status'], 'confirmed')
+        self.assertEqual(p['motion_history'][0]['verification_status'], 'skipped')
         self.assertEqual(p['motion_history'][0]['committed_move_sequence'], 2)
 
     def test_excel_has_engine_history_and_explicit_missing_metric_labels(self):
@@ -162,10 +234,10 @@ class BattleContinuityTests(unittest.TestCase):
         self.assertEqual(self.saved()['game_id'], gid)
         self.assertFalse(self.service._busy)
 
-    def test_pending_completed_move_is_confirmed_without_replaying_robot(self):
-        robot, vision, _ = self.create([self.after_red, TimeoutError('bad verification'), self.after_black], suggestions=[self.black])
+    def test_completed_move_resumes_without_replaying_robot(self):
+        robot, vision, _ = self.create([self.after_red, self.after_black], suggestions=[self.black])
         self.service.submit_start('player'); wait_for(self.service, Phase.PLAYER_TURN.value)
-        self.service.submit_player_done(); wait_for(self.service, Phase.ERROR.value)
+        self.service.submit_player_done(); wait_for(self.service, Phase.PLAYER_TURN.value)
         self.service.submit_stop(); wait_for(self.service, Phase.STOPPED.value)
         gid = self.saved()['game_id']
         self.service.submit_start_current('red', 'player')
@@ -200,7 +272,8 @@ class BattleContinuityTests(unittest.TestCase):
             writer.schedule(p)
             self.assertTrue(writer.flush())
             path = writer.path_for(p['game_id'])
-            self.assertEqual(path.name, f'{gid}.xlsx')
+            self.assertTrue(path.name.startswith('象棋對戰_'))
+            self.assertTrue(path.name.endswith(gid.split('-')[-1] + '.xlsx'))
             w = load_workbook(path, read_only=True)
             try:
                 self.assertEqual(w['對戰片段'].max_row, 5)

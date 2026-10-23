@@ -29,10 +29,11 @@
     </article>
     <article class="panel">
       <div class="pose-title">
-        <div><span class="panel-kicker">SAFETY PREFLIGHT</span><h2>操作端預檢</h2></div>
+        <div><span class="panel-kicker">SAFETY PREFLIGHT</span><h2>例行檢查</h2></div>
         <span id="preflightStatus" class="subtle-badge" role="status" aria-live="polite" aria-atomic="true">讀取中</span>
       </div>
       <ul id="preflightList" class="preflight-list"></ul>
+      <details><summary>其他檢查項目</summary><ul id="preflightDetails" class="preflight-list"></ul></details>
       <p id="preflightTime" class="caption-note">尚未執行預檢</p>
     </article>
     <article class="panel">
@@ -48,6 +49,7 @@
     <article class="panel">
       <div class="panel-kicker">GAME RECORD</div>
       <h2>本局 Excel</h2>
+      <p id="recordDestination" class="caption-note"></p>
       <p id="recordStatus" class="caption-note">開始對局後會在網站資料夾的「對局紀錄」中建立獨立檔案。</p>
       <a id="recordDownload" class="button secondary" href="/api/game/record" download hidden>下載本局紀錄</a>
     </article>

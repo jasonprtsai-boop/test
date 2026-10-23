@@ -598,7 +598,7 @@ class TMRobotAdapter:
                 gripper_may_be_on = False
             if stop_event.is_set():
                 raise StopRequested("流程已停止。")
-            self.callbacks.action("移動 AI 棋子", "雙視角驗證盤面")
+            self.callbacks.action("移動 AI 棋子", "提交棋步並切換回合")
             gripper_may_be_on = True
             transfer_args = (
                 sock,

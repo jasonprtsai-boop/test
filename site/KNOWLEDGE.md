@@ -57,3 +57,12 @@
 - Project relevance：suggest 原本只保留 bestmove，現保留該次完整分析至 engine_history；WDL 依行棋方轉成紅／和／黑，信心或 WDL 不當作真人勝率保證。
 - Source：本機 uci 握手、PikafishEngine.analyze／GameService._query_engine 實測及 runtime/battle-workbook-qa/engine-analysis-verified.xlsx。
 - Confidence：本機此版本觀測為高；未推論其他版本行為。
+
+
+## 2026-10-21 — 現場盤面兵卒可達格
+
+- Technology / Version: 專案 Pikafish 2026-09-25 執行檔；今日日誌已有 WHITE pawn(s) on invalid positions 拒絕紀錄。
+- Official behavior: 官方目前 position.cpp 以 ValidBB 驗證兵、士、象、將的允許位置；此查證不是宣稱目前 master 與專案版本完全相同。
+- Project relevance: 新基準先檢查兵卒的初始縱向界線及過河前不得橫移的格位，避免今日 e2 等異常進入引擎。這不取代引擎完整規則驗證。
+- Source: https://raw.githubusercontent.com/official-pikafish/Pikafish/master/src/position.cpp 及今日引擎失敗日誌。
+- Confidence: 今日引擎拒絕事實為高；新增檢查的作用範圍僅為兵卒格位。

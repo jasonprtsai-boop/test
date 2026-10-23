@@ -160,10 +160,18 @@ class PikafishEngine:
                 raise TimeoutError(f"Pikafish 等待 {marker} 逾時。") from exc
             if line is None:
                 raise RuntimeError(f"Pikafish 在回傳 {marker} 前退出。")
-            if line.startswith("info string ERROR:"):
-                raise RuntimeError(line.removeprefix("info string ERROR:").strip())
+            self._check_error_line(line)
             if line.split()[:1] == [marker]:
                 return line
+
+    @staticmethod
+    def _check_error_line(line: str) -> None:
+        for prefix in ("info string ERROR:", "info string CRITICAL ERROR:"):
+            if line.startswith(prefix):
+                detail = line.removeprefix(prefix).strip()
+                if "pawn(s) on invalid positions" in detail:
+                    detail = "辨識盤面的兵／卒位置不合法，請重新拍攝並檢查影像格點校正。 " + detail
+                raise RuntimeError(detail)
 
     @staticmethod
     def _position_command(
@@ -229,8 +237,7 @@ class PikafishEngine:
                     raise TimeoutError("Pikafish 等待 bestmove 逾時。") from exc
                 if line is None:
                     raise RuntimeError("Pikafish 在回傳 bestmove 前退出。")
-                if line.startswith("info string ERROR:"):
-                    raise RuntimeError(line.removeprefix("info string ERROR:").strip())
+                self._check_error_line(line)
                 parsed = parse_analysis_line(line)
                 if parsed is not None:
                     observed[(parsed.depth, parsed.multipv)] = parsed

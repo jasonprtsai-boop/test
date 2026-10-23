@@ -15,6 +15,25 @@ from tests.fakes import FakeEngine, FakePreflight, FakeRobot, FakeVision, make_s
 
 
 class ServiceTests(unittest.TestCase):
+    def test_two_rounds_capture_only_player_moves(self):
+        first_player = Move((0, 3), (0, 4), 0, "a3a4")
+        first_ai = Move((0, 6), (0, 5), 0, "a6a5")
+        second_player = Move((2, 3), (2, 4), 0, "c3c4")
+        second_ai = Move((2, 6), (2, 5), 0, "c6c5")
+        observed1 = apply_move(starting_board(), first_player)
+        observed2 = apply_move(apply_move(observed1, first_ai), second_player)
+        self.service, robot, vision, _ = make_service([observed1, observed2], [first_ai, second_ai])
+        self.service.submit_start("player")
+        wait_for(self.service, Phase.PLAYER_TURN.value)
+        for _ in range(2):
+            self.service.submit_player_done()
+            wait_for(self.service, Phase.PLAYER_TURN.value)
+        self.assertEqual(vision.calls, 2)
+        self.assertEqual(robot.moves, [first_ai, second_ai])
+        self.assertEqual(self.service._board, apply_move(observed2, second_ai))
+        self.assertEqual(len(self.service._move_history), 4)
+        self.assertTrue(all(m['verification_status'] == 'skipped' for m in self.service._motion_history))
+
     def tearDown(self):
         if hasattr(self, "service"):
             self.service.close()
@@ -136,7 +155,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(state["side_to_move"], "w")
         self.assertEqual(robot.moves, [red_move, black_move])
         self.assertEqual(engine.suggest_calls, 3)
-        self.assertEqual(vision.calls, 3)
+        self.assertEqual(vision.calls, 1)
 
     def test_invalid_game_mode_is_rejected_before_any_hardware_work(self):
         self.service, robot, vision, engine = make_service([])
@@ -198,7 +217,7 @@ class ServiceTests(unittest.TestCase):
         state = wait_for(self.service, Phase.PLAYER_TURN.value)
 
         self.assertEqual(state["last_move"]["uci"], "a6a5")
-        self.assertEqual(vision.calls, 2)
+        self.assertEqual(vision.calls, 1)
         self.assertEqual(engine.suggest_calls, 1)
         self.assertEqual(robot.moves, [ai_move])
 
@@ -376,7 +395,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(engine.legal_calls, 0)
         self.assertEqual(robot.moves, [])
 
-    def test_ai_verification_restores_unrelated_low_confidence_label(self):
+    def test_ai_turn_does_not_consume_post_move_noisy_observation(self):
         initial = starting_board()
         ai_move = Move((0, 3), (0, 4), 0, "a3a4")
         expected = apply_move(initial, ai_move)
@@ -583,51 +602,46 @@ class ServiceTests(unittest.TestCase):
         wait_for(self.service, Phase.PLAYER_TURN.value)
         self.assertEqual(robot.moves[0].captured_piece, 7)
 
-    def test_verification_failure_retry_does_not_recalculate(self):
-        initial = starting_board()
-        player_move = Move((0, 3), (0, 4), 0, "a3a4")
-        after_player = apply_move(initial, player_move)
+    def test_completed_motion_commits_without_second_capture(self):
+        after_player = apply_move(starting_board(), Move((0, 3), (0, 4), 0, "a3a4"))
         ai_move = Move((0, 6), (0, 5), 0, "a6a5")
-        expected = apply_move(after_player, ai_move)
-        outcomes = [after_player, after_player, after_player, expected]
-        self.service, robot, _vision, engine = make_service(outcomes, [ai_move])
+        self.service, robot, vision, engine = make_service(
+            [after_player, AssertionError("second capture forbidden")], [ai_move])
         self.service.submit_start("player")
         wait_for(self.service, Phase.PLAYER_TURN.value)
         self.service.submit_player_done()
-        state = wait_for(self.service, Phase.ERROR.value)
-        self.assertTrue(state["controls"]["can_retry"])
-        self.service.submit_retry()
-        wait_for(self.service, Phase.PLAYER_TURN.value)
+        state = wait_for(self.service, Phase.PLAYER_TURN.value)
+        self.assertEqual(vision.calls, 1)
+        self.assertEqual(robot.moves, [ai_move])
         self.assertEqual(engine.suggest_calls, 1)
-        self.assertEqual(len(robot.moves), 2)
-        self.assertEqual(robot.pick_offsets, [0.0, 0.0])
+        self.assertEqual(self.service._board, apply_move(after_player, ai_move))
+        self.assertIsNone(self.service._pending_move)
+        self.assertFalse(state["controls"]["can_retry"])
+        self.assertEqual(state["last_move"]["confirmation_method"], "motion_completed")
+        motion = self.service._motion_history[-1]
+        self.assertEqual(motion["verification_status"], "skipped")
+        self.assertIsNone(motion["verification_capture_id"])
+        self.assertIsNone(state["last_move"]["capture_id"])
+        self.assertEqual(self.service._capture_history[-1]["accepted_uci"], "a3a4")
+        self.assertEqual(self.service._capture_history[-1]["accepted_board"], after_player)
 
-    def test_stop_after_verification_failure_allows_current_board_new_game(self):
-        initial = starting_board()
-        after_player = apply_move(initial, Move((0, 3), (0, 4), 0, "a3a4"))
+    def test_stop_after_completed_motion_allows_current_board_new_game(self):
+        after_player = apply_move(starting_board(), Move((0, 3), (0, 4), 0, "a3a4"))
         ai_move = Move((0, 6), (0, 5), 0, "a6a5")
         actual = apply_move(after_player, ai_move)
-        self.service, robot, vision, engine = make_service(
-            [after_player, after_player, actual], [ai_move]
-        )
+        self.service, robot, vision, engine = make_service([after_player, actual], [ai_move])
         self.service.submit_start("player")
         wait_for(self.service, Phase.PLAYER_TURN.value)
         self.service.submit_player_done()
-        failed = wait_for(self.service, Phase.ERROR.value)
-        self.assertTrue(failed["controls"]["can_retry"])
-        self.assertFalse(failed["controls"]["can_start_current"])
-        stopped = self.service.submit_stop()
-        self.assertTrue(stopped["controls"]["can_start_current"])
-        # Stopping must not erase the previous pending move or its error.
-        self.assertIsNotNone(self.service._pending_move)
-        self.assertTrue(stopped["error"]["retryable"])
-        self.service.submit_start_current("red", "player")
+        wait_for(self.service, Phase.PLAYER_TURN.value)
+        self.service.submit_stop()
+        wait_for(self.service, Phase.STOPPED.value)
+        self.service.submit_start_current("red", "player", continuation="new")
         recovered = wait_for(self.service, Phase.PLAYER_TURN.value)
         self.assertIsNone(recovered["error"])
         self.assertEqual(self.service._board, actual)
-        self.assertEqual(len(robot.moves), 1)
-        self.assertEqual(engine.suggest_calls, 1)
-        self.assertEqual(vision.calls, 3)
+        self.assertEqual(robot.moves, [ai_move])
+        self.assertEqual(vision.calls, 2)
 
     def test_stopped_verification_error_cannot_bypass_motion_lock(self):
         self.service, _robot, _vision, _engine = make_service([])
@@ -639,45 +653,44 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(CommandConflict):
             self.service.submit_start_current("red", "player")
 
-    def test_retry_commits_if_move_was_already_done(self):
+    def test_retry_commits_interrupted_move_if_already_done(self):
         initial = starting_board()
         move = Move((0, 3), (0, 4), 0, "a3a4")
         expected = apply_move(initial, move)
-        self.service, robot, _vision, engine = make_service(
-            [initial, TimeoutError("images timeout"), expected], [move]
-        )
+        robot = FakeRobot(error=ConnectionResetError("interrupted motion"))
+        temporary = tempfile.TemporaryDirectory(dir=SITE_ROOT / "runtime")
+        self.addCleanup(temporary.cleanup)
+        sessions = GameSessionStore(Path(temporary.name))
+        self.service, _, vision, engine = make_service(
+            [initial, initial, expected], [move], robot=robot, session_store=sessions)
         self.service.submit_start("ai")
+        wait_for(self.service, Phase.ERROR.value)
+        deadline = time.monotonic() + 5
+        while not self.service.get_state()["controls"]["can_confirm_safe_stop"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(self.service.get_state()["controls"]["can_confirm_safe_stop"])
+        robot.error = None
+        self.service.submit_confirm_safe_stop(True)
+        self.service.submit_resume("ai")
         wait_for(self.service, Phase.ERROR.value)
         self.service.submit_retry()
         wait_for(self.service, Phase.PLAYER_TURN.value)
         self.assertEqual(engine.suggest_calls, 1)
-        self.assertEqual(len(robot.moves), 1)
+        self.assertEqual(robot.moves, [move])
+        self.assertEqual(vision.calls, 3)
 
-    def test_retry_is_blocked_when_failed_capture_did_not_return_to_listen(self):
+    def test_initial_capture_stationary_failure_still_blocks_motion(self):
         class UncertainCaptureRobot(FakeRobot):
-            def __init__(self):
-                super().__init__()
-                self.confirm_calls = 0
-
             def confirm_stationary(self):
-                self.confirm_calls += 1
-                if self.confirm_calls >= 2:
-                    raise TimeoutError("TMflow not back at Listen")
-                return super().confirm_stationary()
-
-        initial = starting_board()
-        move = Move((0, 3), (0, 4), 0, "a3a4")
-        robot = UncertainCaptureRobot()
-        self.service, *_ = make_service(
-            [initial, TimeoutError("images timeout")], [move], robot=robot
-        )
-
+                raise TimeoutError("TMflow not back at Listen")
+        self.service, robot, vision, engine = make_service(
+            [starting_board()], [Move((0, 3), (0, 4), 0, "a3a4")], robot=UncertainCaptureRobot())
         self.service.submit_start("ai")
         state = wait_for(self.service, Phase.ERROR.value)
-
         self.assertTrue(state["robot"]["motion_may_continue"])
         self.assertFalse(state["controls"]["can_retry"])
         self.assertTrue(state["controls"]["can_confirm_safe_stop"])
+        self.assertEqual(robot.moves, [])
 
     def test_yolo_failure_is_structured_error(self):
         self.service, *_ = make_service([RuntimeError("YOLO failed")])
@@ -1099,6 +1112,13 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(state["controls"]["can_retry"])
         self.assertIn("尚未完成", state["error"]["message"])
         self.assertEqual(robot.moves, [])
+        self.assertEqual(engine.suggest_calls, 0)
+
+        _vision.outcomes.append(before)
+        self.service.submit_retry()
+        wait_for(self.service, Phase.PLAYER_TURN.value)
+        self.assertEqual(robot.moves, [move])
+        self.assertEqual(_vision.calls, 2)
         self.assertEqual(engine.suggest_calls, 0)
 
     def test_resume_ai_turn_accepts_one_legal_player_move_then_runs_ai(self):

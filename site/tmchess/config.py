@@ -1,8 +1,7 @@
 """Single source of truth for network, vision, engine and robot settings.
 
-Calibrated cell coordinates are retained, but physical motion is fail-closed on
-every process start.  Set ``TMCHESS_HARDWARE_ENABLED=1`` only at the attended
-robot cell after completing the physical safety checklist.
+Hardware mode is enabled by default. Set ``TMCHESS_HARDWARE_ENABLED=0``
+to disable it. Physical motion still requires the runtime safety checks.
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from typing import Optional, Tuple
 
 SITE_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = SITE_ROOT.parent
-HARDWARE_ENABLED = os.getenv("TMCHESS_HARDWARE_ENABLED", "").strip() == "1"
+HARDWARE_ENABLED = os.getenv("TMCHESS_HARDWARE_ENABLED", "1").strip() == "1"
 
 
 @dataclass(frozen=True)
@@ -53,7 +52,7 @@ class MotionConfig:
     # Measured with the installed suction assembly while TMflow uses
     # RobotBase + NOTOOL. Motion remains locked until the missing board
     # geometry and every safety sign-off are completed.
-    z_safe: Optional[float] = 525.0
+    z_safe: Optional[float] = 420.0
     z_approach: Optional[float] = 355.0
     # Fixed on-site board contact height confirmed on 2026-10-13.  Both normal
     # moves and operator-requested retries use this same absolute Z value.
@@ -238,8 +237,10 @@ class VisionConfig:
     v1_row_y: Tuple[float, ...] = (155.0, 295.5, 433.5, 571.5, 709.5, 832.0, 969.0, 1104.0, 1242.0, 1380.0)
     v1_max_distance: float = 105.0
     v2_reference: Tuple[int, int] = (2592, 1944)
-    v2_col_x: Tuple[float, ...] = (1252.0, 1506.0, 1765.0, 2025.0)
-    v2_row_y: Tuple[float, ...] = (929.0, 1189.0, 1430.0, 1690.0)
+    # Recalibrated from visible grid lines in the 2026-10-20 V2 captures
+    # after board translation; local rows correspond to main rows 1..4.
+    v2_col_x: Tuple[float, ...] = (1030.0, 1287.0, 1545.0, 1805.0)
+    v2_row_y: Tuple[float, ...] = (1037.0, 1295.0, 1547.0, 1800.0)
     v2_max_dx: float = 125.0
     v2_max_dy: float = 125.0
 
@@ -267,9 +268,9 @@ class SafetyConfig:
     # Base/TCP names on every process start. TMflow 1.82.51 has no verified
     # programmatic query in this project, so the confirmation remains human.
     base_tcp_runtime_guard_verified: bool = True
-    # The 2026-10-13 inspection covered the previous board position. The
-    # operator-confirmed translation on 2026-10-20 still needs on-site checks.
-    board_coordinates_verified: bool = False
+    # Operator confirmed the translated board coordinates on 2026-10-20.
+    # This is a human sign-off, not a new automated 90-point measurement.
+    board_coordinates_verified: bool = True
     z_heights_verified: bool = True
     graveyard_verified: bool = True
     # The operator explicitly accepted on 2026-10-13 that full-box pile height
