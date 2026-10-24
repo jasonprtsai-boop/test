@@ -5,7 +5,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from tmchess.board import Move
 from tmchess.config import CONFIG, SITE_ROOT
@@ -15,6 +15,39 @@ from tests.fakes import FakeEngine, FakePreflight, FakeRobot, FakeVision
 
 
 class RobotProtocolTests(unittest.TestCase):
+    def test_tcp_connect_retries_before_any_script_is_sent(self):
+        adapter = TMRobotAdapter(CONFIG.network, CONFIG.motion)
+        sock = Mock()
+        with patch.object(adapter._hardware_lease, 'acquire'), patch('tmchess.robot.time.sleep'), patch(
+            'tmchess.robot.socket.create_connection', side_effect=[TimeoutError('timed out'), sock]
+        ) as connect:
+            self.assertIs(adapter._connect(), sock)
+        self.assertEqual(connect.call_count, 2)
+        sock.sendall.assert_not_called()
+
+    def test_tcp_connect_failure_is_bounded_and_descriptive(self):
+        adapter = TMRobotAdapter(CONFIG.network, CONFIG.motion)
+        with patch.object(adapter._hardware_lease, 'acquire'), patch('tmchess.robot.time.sleep'), patch(
+            'tmchess.robot.socket.create_connection', side_effect=ConnectionRefusedError('refused')
+        ) as connect:
+            with self.assertRaisesRegex(ConnectionError, '已嘗試 3 次，尚未送出命令'):
+                adapter._connect()
+        self.assertEqual(connect.call_count, 3)
+
+    def test_stop_during_connection_prevents_capture_command(self):
+        adapter = TMRobotAdapter(CONFIG.network, CONFIG.motion)
+        stop = threading.Event()
+        sock = Mock()
+        sock.__enter__ = Mock(return_value=sock)
+        sock.__exit__ = Mock(return_value=False)
+        def connected():
+            stop.set()
+            return sock, (0,) * 6
+        with patch.object(adapter, '_open_listen_session', side_effect=connected):
+            with self.assertRaises(StopRequested):
+                adapter.trigger_capture(stop)
+        sock.sendall.assert_not_called()
+
     def test_hardware_lease_rejects_second_controller_process(self):
         (SITE_ROOT / "runtime").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=SITE_ROOT / "runtime") as temporary:

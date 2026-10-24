@@ -34,3 +34,9 @@ cd site
 .\.venv\Scripts\python.exe -m compileall -q app.py tmchess tests tools
 .\.venv\Scripts\python.exe -m pip check
 ```
+
+後續 Excel 按台灣時間的對戰開始日歸檔至 `site/對局紀錄/整場對戰/YYYY-MM-DD/`；同場跨日續局仍沿用原日期資料夾。請以介面顯示的實際 Excel 路徑為準。
+
+## 專案整理
+
+主要資料夾用途請見 [PROJECT_TREE.md](PROJECT_TREE.md)，清理後程式檢查請見 [CODE_REVIEW_20261023.md](CODE_REVIEW_20261023.md)。

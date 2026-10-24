@@ -96,7 +96,9 @@ class BattleContinuityTests(unittest.TestCase):
         gid = self.service.get_state()['game']['id']
         original = writer.path_for(gid)
         self.assertTrue(original.name.startswith('王同學_練習賽_'))
-        self.assertEqual(original.parent, writer.root / '整場對戰')
+        from datetime import datetime, timedelta
+        day = (datetime.strptime(gid.split('-')[0], '%Y%m%dT%H%M%SZ') + timedelta(hours=8)).strftime('%Y-%m-%d')
+        self.assertEqual(original.parent, writer.root / '整場對戰' / day)
         self.service.submit_player_done()
         wait_for(self.service, Phase.ERROR.value)
         self.service.submit_start_current('red', 'player', continuation='rebaseline', record_name='不可更名')

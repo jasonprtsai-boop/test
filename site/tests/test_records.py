@@ -6,7 +6,7 @@ from unittest.mock import patch
 from dataclasses import replace
 from pathlib import Path
 
-from openpyxl import load_workbook
+from openpyxl import load_workbook, Workbook
 
 from tmchess.board import Move, apply_move
 from tmchess.config import CONFIG, SITE_ROOT
@@ -18,6 +18,28 @@ from tests.fakes import make_service, starting_board, wait_for
 
 
 class GameRecordTests(unittest.TestCase):
+    def test_record_date_folder_uses_taiwan_day(self):
+        path = self.records.path_for('20261022T163000Z-12345678')
+        self.assertEqual(path.parent, self.records.root / '2026-10-23')
+
+    def test_diagnostic_columns_keep_missing_values_explicit(self):
+        workbook = Workbook()
+        captures = workbook.active
+        GameRecordWriter._write_captures(captures, [{
+            'trigger_seconds': 5.2, 'stationary_confirmation_seconds': 1.3,
+            'repair_context': '玩家走子', 'failure_stage': 'capture_trigger',
+        }, {}])
+        headers = {cell.value: cell.column for cell in captures[3]}
+        self.assertEqual(captures.cell(4, headers['拍攝觸發秒數']).value, 5.2)
+        self.assertEqual(captures.cell(4, headers['靜止確認秒數']).value, 1.3)
+        self.assertEqual(captures.cell(5, headers['拍攝觸發秒數']).value, '未記錄')
+        motions = workbook.create_sheet()
+        GameRecordWriter._write_motions(motions, [{'confirmation_method': 'motion_completed'}])
+        headers = {cell.value: cell.column for cell in motions[3]}
+        self.assertIn('未做影像驗證', motions.cell(4, headers['棋步確認依據']).value)
+        self.assertIn('不能推定', motions.cell(4, headers['人工補放紀錄']).value)
+        workbook.close()
+
     def setUp(self):
         (SITE_ROOT / "runtime").mkdir(exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(dir=SITE_ROOT / "runtime")
@@ -136,7 +158,7 @@ class GameRecordTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertTrue(self.records.flush())
 
-        files = {path.stem for path in self.records.root.glob("*.xlsx")}
+        files = {path.stem for path in self.records.root.rglob("*.xlsx")}
         self.assertEqual(files, {first, second})
 
 

@@ -1618,9 +1618,18 @@ class GameService:
         # Persist before ScriptExit. A process crash after the command is sent
         # must restart locked rather than claiming the robot is stationary.
         self._persist_session()
+        def trigger_capture():
+            trigger_started = time.monotonic()
+            try:
+                self.robot.trigger_capture(self._stop_event)
+            except Exception:
+                record["failure_stage"] = "capture_trigger"
+                raise
+            finally:
+                record["trigger_seconds"] = round(time.monotonic() - trigger_started, 3)
         try:
             try:
-                result = self.vision.capture(capture_id, lambda: self.robot.trigger_capture(self._stop_event))
+                result = self.vision.capture(capture_id, trigger_capture)
             except BoardObservationError as exc:
                 self._record_observation(record, exc.result)
                 record["validation_error"] = str(exc)
@@ -1673,12 +1682,17 @@ class GameService:
         self._persist_session()
         self._guard_running()
         if hasattr(self.robot, "confirm_stationary"):
+            stationary_started = time.monotonic()
             try:
                 self.robot.confirm_stationary()
             except Exception as exc:
                 record.update(status="failed", failure_stage="stationary_confirmation",
                               error_type=type(exc).__name__, error_message=str(exc))
                 raise
+            finally:
+                record["stationary_confirmation_seconds"] = round(time.monotonic() - stationary_started, 3)
+                record["completed_at"] = utc_now()
+                record["workflow_seconds"] = round(time.monotonic() - started, 3)
         self._guard_running()
         self.store.update(lambda state: state["robot"].update(
             motion_may_continue=False,

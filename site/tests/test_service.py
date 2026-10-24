@@ -15,6 +15,38 @@ from tests.fakes import FakeEngine, FakePreflight, FakeRobot, FakeVision, make_s
 
 
 class ServiceTests(unittest.TestCase):
+    def test_capture_trigger_failure_records_stage_without_robot_move(self):
+        class TriggerFailure(FakeRobot):
+            def trigger_capture(self, stop_event):
+                raise ConnectionError('TCP unavailable')
+        robot = TriggerFailure()
+        self.service, *_ = make_service([], robot=robot)
+        self.service.submit_start('player')
+        wait_for(self.service, Phase.PLAYER_TURN.value)
+        self.service.submit_player_done()
+        wait_for(self.service, Phase.ERROR.value)
+        record = self.service._capture_history[-1]
+        self.assertEqual(record['failure_stage'], 'capture_trigger')
+        self.assertGreaterEqual(record['trigger_seconds'], 0)
+        self.assertEqual(robot.moves, [])
+
+    def test_stationary_failure_records_full_workflow_duration(self):
+        class StationaryFailure(FakeRobot):
+            def confirm_stationary(self):
+                raise TimeoutError('TCP unavailable')
+        robot = StationaryFailure()
+        observed = apply_move(starting_board(), Move((0, 3), (0, 4), 0, 'a3a4'))
+        self.service, *_ = make_service([observed], robot=robot)
+        self.service.submit_start('player')
+        wait_for(self.service, Phase.PLAYER_TURN.value)
+        self.service.submit_player_done()
+        wait_for(self.service, Phase.ERROR.value)
+        record = self.service._capture_history[-1]
+        self.assertEqual(record['failure_stage'], 'stationary_confirmation')
+        self.assertGreaterEqual(record['workflow_seconds'], record['stationary_confirmation_seconds'])
+        self.assertIsNotNone(record['observed_board'])
+        self.assertEqual(robot.moves, [])
+
     def test_two_rounds_capture_only_player_moves(self):
         first_player = Move((0, 3), (0, 4), 0, "a3a4")
         first_ai = Move((0, 6), (0, 5), 0, "a6a5")

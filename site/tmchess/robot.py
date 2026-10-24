@@ -128,10 +128,25 @@ class TMRobotAdapter:
 
     def _connect(self) -> socket.socket:
         self._hardware_lease.acquire()
-        sock = socket.create_connection(
-            (self.network.robot_ip, self.network.robot_listen_port),
-            timeout=self.motion.socket_timeout_seconds,
-        )
+        # Retry only connection establishment: no script has been sent yet.
+        deadline = time.monotonic() + self.motion.listen_ready_timeout_seconds
+        for attempt in range(1, 4):
+            try:
+                sock = socket.create_connection(
+                    (self.network.robot_ip, self.network.robot_listen_port),
+                    timeout=min(self.motion.socket_timeout_seconds, max(0.001, deadline - time.monotonic())),
+                )
+                break
+            except (TimeoutError, ConnectionError) as exc:
+                remaining = deadline - time.monotonic()
+                LOGGER.warning("[ROBOT] TCP connect failed attempt=%s target=%s:%s error=%s",
+                               attempt, self.network.robot_ip, self.network.robot_listen_port, exc)
+                if attempt == 3 or remaining <= self.motion.listen_retry_seconds:
+                    raise ConnectionError(
+                        f"Robot TCP 連線建立失敗（{self.network.robot_ip}:{self.network.robot_listen_port}，"
+                        f"已嘗試 {attempt} 次，尚未送出命令）：{exc}"
+                    ) from exc
+                time.sleep(self.motion.listen_retry_seconds)
         sock.settimeout(self.motion.socket_timeout_seconds)
         LOGGER.info(
             "[ROBOT] Listen connection established target=%s:%s",
@@ -527,6 +542,7 @@ class TMRobotAdapter:
         with self._lock:
             sock, _pose = self._open_listen_session()
             with sock:
+                self._guard_not_stopped(stop_event)
                 self._send_script(sock, "ScriptExit()", "EXIT")
 
     def execute_move(

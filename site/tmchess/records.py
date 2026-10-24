@@ -111,6 +111,9 @@ class GameRecordWriter:
         battle_id = self._battle_ids.get(game_id)
         directory = self.root / "整場對戰" if battle_id else self.root
         identity = battle_id or game_id
+        stamp = identity.split("-", 1)[0]
+        local = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ") + timedelta(hours=8)
+        directory = directory / local.strftime("%Y-%m-%d")
         prefix = self._record_names.get(identity, "")
         filename = f"{prefix}{identity}"
         if prefix:
@@ -426,6 +429,12 @@ class GameRecordWriter:
             ("引擎查詢次數", len(payload.get("engine_history", [])) if "engine_history" in payload else "未記錄"),
             ("空白數據說明", "未記錄＝來源沒有數據；不適用＝該角色無此步驟。不可當作零。流程總秒數含等待／恢復時間。"),
             ("報告副本說明", payload.get("report_note") or "執行中紀錄；以保存快照為來源。"),
+            ("機械動作完成次數", sum(x.get("status") == "completed" for x in payload.get("motion_history", []))),
+            ("落子影像確認次數", sum(x.get("verification_status") == "confirmed" for x in payload.get("motion_history", []))),
+            ("略過落子影像驗證次數", sum(x.get("verification_status") == "skipped" for x in payload.get("motion_history", []))),
+            ("歷史補正拍攝次數", sum(bool(x.get("history_repairs")) for x in payload.get("capture_history", []))),
+            ("歷史補正累計格次", sum(len(x.get("history_repairs", [])) for x in payload.get("capture_history", []))),
+            ("人工補放統計", "未記錄；動作完成不代表無人工介入或吸取成功。"),
         ]
         cls._section(sheet, 4, "對局狀態", 9)
         row = 5
@@ -566,6 +575,7 @@ class GameRecordWriter:
             "錯誤類型", "錯誤訊息",
             "原始盤面檢查", "沿用歷史格數", "歷史修正明細",
             "原始辨識盤面", "採用盤面", "逐格信心", "採用狀態", "採用著法", "失敗階段", "檔案狀態", "流程經過秒數",
+            "拍攝觸發秒數", "靜止確認秒數", "歷史補正情境",
         ]
         cls._title(sheet, "拍攝與辨識紀錄", len(headers))
         cls._header_row(sheet, 3, headers)
@@ -587,10 +597,12 @@ class GameRecordWriter:
                 item.get("acceptance_status") or "未提交著法", item.get("accepted_uci") or "—",
                 item.get("failure_stage") or "—", _detail(item.get("artifact_status")),
                 _metric(item,'workflow_seconds'),
+                _metric(item, 'trigger_seconds'), _metric(item, 'stationary_confirmation_seconds'),
+                item.get('repair_context') or '未記錄',
             ]
             for column, value in enumerate(values, start=1):
                 sheet.cell(index + 3, column, value)
-        cls._finish_table(sheet, 3, len(rows) + 3, [8, 8, 21, 21, 20, 12, 31] + [34] * 5 + [12] * 7 + [20, 42, 40, 12, 48] + [30, 30, 30, 18, 12, 26, 48, 16])
+        cls._finish_table(sheet, 3, len(rows) + 3, [8, 8, 21, 21, 20, 12, 31] + [34] * 5 + [12] * 7 + [20, 42, 40, 12, 48] + [30, 30, 30, 18, 12, 26, 48, 16, 18, 18, 30])
 
     @classmethod
     def _write_motions(cls, sheet, history: Any) -> None:
@@ -600,6 +612,7 @@ class GameRecordWriter:
             "目標X", "目標Y", "目標Z", "實際X", "實際Y", "實際Z", "XYZ誤差mm", "姿態誤差deg",
             "落子箱X", "落子箱Y", "錯誤類型", "錯誤訊息",
             "著法作業編號", "落子影像驗證", "提交棋步序號", "確認影像", "最後動作階段", "動作階段明細",
+            "棋步確認依據", "人工補放紀錄",
         ]
         cls._title(sheet, "Robot 動作與位置誤差", len(headers))
         cls._header_row(sheet, 3, headers)
@@ -619,10 +632,12 @@ class GameRecordWriter:
                 item.get("move_attempt_id") or "未記錄", item.get("verification_status") or "未記錄",
                 item.get("committed_move_sequence") or "尚未連結提交", item.get("verification_capture_id") or "—",
                 item.get("last_action") or "未記錄", _detail(item.get("stages")),
+                {"motion_completed": "機械動作完成（未做影像驗證）", "vision": "影像核對"}.get(item.get("confirmation_method"), item.get("confirmation_method") or "未記錄"),
+                "未記錄（不能推定無人工介入）",
             ]
             for column, value in enumerate(values, start=1):
                 sheet.cell(index + 3, column, value)
-        cls._finish_table(sheet, 3, len(rows) + 3, [8, 8, 21, 21, 12, 8, 12, 12] + [13] * 18 + [20, 42] + [36, 20, 16, 31, 30, 48])
+        cls._finish_table(sheet, 3, len(rows) + 3, [8, 8, 21, 21, 12, 8, 12, 12] + [13] * 18 + [20, 42] + [36, 20, 16, 31, 30, 48, 40, 40])
 
     @classmethod
     def _write_engine(cls, sheet, history: Any) -> None:

@@ -66,3 +66,11 @@
 - Project relevance: 新基準先檢查兵卒的初始縱向界線及過河前不得橫移的格位，避免今日 e2 等異常進入引擎。這不取代引擎完整規則驗證。
 - Source: https://raw.githubusercontent.com/official-pikafish/Pikafish/master/src/position.cpp 及今日引擎失敗日誌。
 - Confidence: 今日引擎拒絕事實為高；新增檢查的作用範圍僅為兵卒格位。
+
+## 2026-10-23 — TCP 連線建立
+
+- Technology / Version: Python socket（現場堆疊為 Python 3.14）。
+- Official behavior: create_connection 的 timeout 用於建立連線，OS 仍可能回報自己的 timeout。
+- Source: https://docs.python.org/3.14/library/socket.html#socket.create_connection
+- Project relevance: 僅在尚未送出應用命令的 connect 階段重試；不從連線錯誤推定前一個已送出的動作未執行。
+- Confidence: 官方 API 行為高；實機短暫斷線恢復效果待驗證。

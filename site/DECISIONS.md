@@ -393,3 +393,18 @@
 - Records: confirmation_method=motion_completed；verification_status=skipped；驗證照片為空；影像與驗證耗時不適用。禁止把前一張玩家照片連結為 AI 落子驗證，禁止覆寫其 accepted_board。
 - Trade-off: 不再因落子後影像誤辨識卡住，但實際吸取／放置失敗不會立即偵測。動作完成不代表實體盤面已確認。機械通訊失敗、停止、動作未知鎖仍保留。
 - Validation: 全套 250 項測試通過；包含連續回合不追加拍攝、雙引擎逐步執行、中斷恢復、停止與通訊錯誤保護、Excel 與原始照片關聯。Python／JavaScript 語法通過；隔離瀏覽器驗證玩家頁可操作、核對面板已移除且無頁面例外。未操作真機。
+
+## 2026-10-23 — 連線建立重試與紀錄細化
+
+- Decision: 保留使用者要求的歷史補正與略過落子後二檢；此次只補連線建立與診斷紀錄。
+- Evidence: 10/22 13:33 為拍攝觸發前 TCP connect timeout；15:17 為辨識完成後 confirm_stationary 的 TCP connect timeout。
+- Implementation: TCP timeout／connection error 最多嘗試三次，依 listen_ready_timeout_seconds 限制連線嘗試時間；連線成功後不重送拍攝、移動、吸盤或 Pose 命令。拍攝觸發前再次檢查停止旗標。
+- Records: 拍攝表增加觸發與靜止確認耗時、補正情境；完成時間與流程耗時包含後續靜止確認。動作表增加確認依據與人工介入未記錄說明；摘要區分動作完成、影像確認、略過驗證、歷史補正次數及格次。
+- Trade-off: 短暫斷線可恢復，持續故障會多等待有限時間；不宣稱已解決網路或控制器根因。沒有操作入口紀錄的人工補放保持未知，不能推定為零。
+- Validation: 全套 256 項測試通過、compileall、pip check、git diff --check 通過。未操作真機；既有 Excel 不覆寫，新紀錄使用新欄位。
+
+## 2026-10-23 — Excel 依日期歸檔
+
+- 後續整場 Excel 儲存在 `對局紀錄/整場對戰/YYYY-MM-DD/`，日期取 battle_id 的台灣時間開始日；跨日續局仍沿用原日期，無 battle_id 的舊式紀錄使用 game_id 日期。
+- 已依使用者要求將 10/22 兩場改名為陳郁政與簡瑞廷，10/21 的 9 本吳紀錄合成單本，各場工作表獨立保留。
+- 合併核對 55,717 個非空儲存格與所有合併範圍一致；僅刪除整場對戰目錄中其餘原始 Excel，保留照片、遊戲快照與日誌。
