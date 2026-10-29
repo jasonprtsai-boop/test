@@ -2503,6 +2503,9 @@ class GameService:
         }
 
     def _complete_motion_record(self, record: dict[str, Any]) -> None:
+        # Successful adapters report the landing pose before their standby return.
+        if record.get("position_error_mm") is not None:
+            return
         pose = self.store.snapshot().get("robot", {}).get("pose")
         if not isinstance(pose, dict):
             return

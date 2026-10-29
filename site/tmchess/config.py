@@ -7,6 +7,7 @@ to disable it. Physical motion still requires the runtime safety checks.
 from __future__ import annotations
 
 import os
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Tuple
@@ -53,6 +54,9 @@ class MotionConfig:
     # RobotBase + NOTOOL. Motion remains locked until the missing board
     # geometry and every safety sign-off are completed.
     z_safe: Optional[float] = 420.0
+    # First camera/standby position confirmed by the operator on 2026-10-27.
+    # RobotBase + NOTOOL; orientation follows orientation_rxyz.
+    standby_xyz: Tuple[float, float, float] = (330.08, 80.60, 578.92)
     z_approach: Optional[float] = 355.0
     # Fixed on-site board contact height confirmed on 2026-10-13.  Both normal
     # moves and operator-requested retries use this same absolute Z value.
@@ -74,7 +78,7 @@ class MotionConfig:
     tcp_name: Optional[str] = "NOTOOL"
     gripper_do_device: str = "ControlBox"
     gripper_do_pin: int = 3
-    speed: int = 45
+    speed: int = 50
     acceleration: int = 200
     blend: int = 0
     precise: str = "false"
@@ -165,6 +169,12 @@ class MotionConfig:
             "TCP 名稱": self.tcp_name,
         }
         missing = [name for name, value in required.items() if value is None]
+        if (
+            len(self.standby_xyz) != 3
+            or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in self.standby_xyz)
+            or self.z_safe is not None and self.standby_xyz[2] < self.z_safe
+        ):
+            missing.append("第一拍照安全點須為有效 XYZ，且高度不得低於 Z_SAFE")
         if self.board_reference_xy is not None and len(self.board_reference_xy) != 4:
             missing.append("board_reference_xy(必須四點)")
         if all(value is not None for value in (self.z_safe, self.z_approach, self.z_pick)):

@@ -15,6 +15,73 @@ from tests.fakes import FakeEngine, FakePreflight, FakeRobot, FakeVision
 
 
 class RobotProtocolTests(unittest.TestCase):
+    def test_move_returns_to_camera_after_release_and_preserves_landing_pose(self):
+        for captured in (0, 7):
+            with self.subTest(captured=captured):
+                adapter = TMRobotAdapter(CONFIG.network, replace(
+                    CONFIG.motion, vacuum_settle_seconds=0, release_settle_seconds=0
+                ))
+                stop = threading.Event()
+                sock = Mock()
+                sock.__enter__ = Mock(return_value=sock)
+                sock.__exit__ = Mock(return_value=False)
+                move = Move((0, 0), (0, 1), captured, "a0a1")
+                landing = adapter._pose(adapter._xy_for_cell(move.destination), CONFIG.motion.z_safe)
+                commands = []
+                with patch.object(adapter, '_open_listen_session', return_value=(sock, landing)), \
+                     patch.object(adapter, '_enter_safe_plane'), \
+                     patch.object(adapter, '_send_line', side_effect=lambda s, p, **kw: commands.append(('move', p))), \
+                     patch.object(adapter, '_wait_until_pose'), \
+                     patch.object(adapter, '_read_pose', return_value=landing), \
+                     patch.object(adapter, '_set_gripper', side_effect=lambda s, enabled, *args, **kw: commands.append(('grip', enabled))):
+                    report = adapter.execute_move(move, stop)
+                self.assertEqual(commands[-2:], [
+                    ('move', (330.08, 80.60, 420.0, -180.0, 0.0, 80.0)),
+                    ('move', (330.08, 80.60, 578.92, -180.0, 0.0, 80.0)),
+                ])
+                self.assertEqual([v for k, v in commands if k == 'grip'][-1], False)
+                self.assertEqual(report['actual_x'], landing[0])
+                self.assertEqual(report['position_error_mm'], 0)
+
+    def test_standby_stop_or_failure_does_not_report_success(self):
+        for failure in ('stop', 'disconnect'):
+            with self.subTest(failure=failure):
+                adapter = TMRobotAdapter(CONFIG.network, CONFIG.motion)
+                stop = threading.Event()
+                sock = Mock()
+                sock.__enter__ = Mock(return_value=sock)
+                sock.__exit__ = Mock(return_value=False)
+                def arrive(*args, **kwargs):
+                    if failure == 'stop':
+                        stop.set()
+                    else:
+                        raise ConnectionResetError('return failed')
+                with patch.object(adapter, '_open_listen_session', return_value=(sock, (0,) * 6)), \
+                     patch.object(adapter, '_enter_safe_plane'), \
+                     patch.object(adapter, '_execute_move_in_session', return_value=None), \
+                     patch.object(adapter, '_read_pose', return_value=(0,) * 6), \
+                     patch.object(adapter, '_send_line') as send, \
+                     patch.object(adapter, '_wait_until_pose', side_effect=arrive):
+                    with self.assertRaises(StopRequested if failure == 'stop' else ConnectionResetError):
+                        adapter.execute_move(Move((0, 0), (0, 1), 0, 'a0a1'), stop)
+                    self.assertEqual(send.call_count, 1)
+
+    def test_standby_configuration_rejects_low_or_nonfinite_height(self):
+        for xyz in ((1, 2, 300), (1, 2, float('nan'))):
+            self.assertIn('第一拍照安全點須為有效 XYZ，且高度不得低於 Z_SAFE',
+                          replace(CONFIG.motion, standby_xyz=xyz).missing_fields())
+
+    def test_motion_record_keeps_landing_measurement_after_standby_return(self):
+        from tmchess.service import GameService
+        service = GameService.__new__(GameService)
+        service.store = Mock()
+        record = {'actual_x': 200.0, 'actual_y': 100.0, 'actual_z': 420.0,
+                  'position_error_mm': 0.01, 'orientation_error_deg': 0.002}
+        expected = record.copy()
+        service._complete_motion_record(record)
+        self.assertEqual(record, expected)
+        service.store.snapshot.assert_not_called()
+
     def test_tcp_connect_retries_before_any_script_is_sent(self):
         adapter = TMRobotAdapter(CONFIG.network, CONFIG.motion)
         sock = Mock()

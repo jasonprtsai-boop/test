@@ -564,7 +564,22 @@ class TMRobotAdapter:
                     stop_event,
                     source_pick_offset_mm=source_pick_offset_mm,
                 )
+                # Preserve the landing measurement before returning to standby.
+                landing_pose = self._read_pose(sock)
+                landing_target = self._pose(self._xy_for_cell(move.destination), self.motion.z_safe)
+                self.callbacks.action("回到第一拍照安全點", "確認到位後提交棋步並切換回合")
+                return_started = time.monotonic()
+                standby = self.motion.standby_xyz
+                self._move_to(sock, self._pose(standby[:2], self.motion.z_safe), stop_event=stop_event)
+                self._move_to(sock, self._pose(standby[:2], standby[2]), stop_event=stop_event)
+                return_seconds = round(time.monotonic() - return_started, 3)
         return {
+            "actual_x": landing_pose[0],
+            "actual_y": landing_pose[1],
+            "actual_z": landing_pose[2],
+            "position_error_mm": round(self._xyz_distance(landing_pose, landing_target), 4),
+            "orientation_error_deg": round(self._orientation_error(landing_pose, landing_target), 4),
+            "standby_return_seconds": return_seconds,
             "adapter_seconds": round(time.monotonic() - started, 3),
             "graveyard_x": round(graveyard_xy[0], 3) if graveyard_xy is not None else None,
             "graveyard_y": round(graveyard_xy[1], 3) if graveyard_xy is not None else None,
