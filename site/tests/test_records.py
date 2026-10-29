@@ -18,6 +18,28 @@ from tests.fakes import make_service, starting_board, wait_for
 
 
 class GameRecordTests(unittest.TestCase):
+    def test_photo_archive_matches_workbook_and_combines_segments(self):
+        self.records.games_root = self.sessions.root
+        ids = ['20261028T010000Z-12345678', '20261028T020000Z-87654321']
+        for index, game_id in enumerate(ids):
+            directory = self.sessions.create(game_id)
+            (directory / f'capture_{index}_v1.jpg').write_bytes(bytes([index, 1, 2]))
+        self.records._battle_ids[ids[1]] = ids[0]
+        self.records._record_names[ids[0]] = '測試者_'
+        target = self.records.path_for(ids[1])
+        segments = [{'game_id': game_id} for game_id in ids]
+        self.records._export_photos(target, segments)
+        self.assertEqual(target.stem, '測試者_2026-10-28_09-00-00_12345678')
+        destination = self.records.root.parent / target.stem
+        self.assertEqual(len(list(destination.glob('*.jpg'))), 2)
+        self.assertFalse(target.with_suffix('').exists())
+        photo = destination / 'capture_0_v1.jpg'
+        before = photo.stat().st_mtime_ns
+        self.records._export_photos(target, segments)
+        self.assertEqual(photo.stat().st_mtime_ns, before)
+        self.assertEqual(photo.read_bytes(), bytes([0, 1, 2]))
+        self.assertTrue((self.sessions.game_directory(ids[0]) / photo.name).is_file())
+
     def test_record_date_folder_uses_taiwan_day(self):
         path = self.records.path_for('20261022T163000Z-12345678')
         self.assertEqual(path.parent, self.records.root / '2026-10-23')

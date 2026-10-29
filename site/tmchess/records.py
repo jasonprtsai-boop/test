@@ -6,6 +6,7 @@ import copy
 import json
 import logging
 import math
+import shutil
 import threading
 import time
 import unicodedata
@@ -232,10 +233,13 @@ class GameRecordWriter:
         if battle_id:
             with self._condition:
                 head = copy.deepcopy(self._battle_heads[battle_id])
-            workbook = self._build_battle_workbook(self._battle_segments(head))
+            segments = self._battle_segments(head)
+            workbook = self._build_battle_workbook(segments)
         else:
+            segments = [payload]
             workbook = self._build_workbook(payload)
         try:
+            self._export_photos(target, segments)
             workbook.save(temporary)
             for attempt in range(4):
                 try:
@@ -256,6 +260,33 @@ class GameRecordWriter:
                 LOGGER.warning("[RECORD] could not remove temporary workbook %s", temporary, exc_info=True)
         LOGGER.info("[RECORD] Excel updated game=%s path=%s", game_id, target)
         return target
+
+    def _export_photos(self, target: Path, segments: list[dict[str, Any]]) -> None:
+        """Keep named photo archives directly in the records root's parent."""
+        if self.games_root is None:
+            return
+        destination = self.root.parent / target.stem
+        destination.mkdir(parents=True, exist_ok=True)
+        for segment in segments:
+            game_id = str(segment["game_id"])
+            if not GAME_ID_PATTERN.fullmatch(game_id):
+                raise ValueError("game id 格式錯誤。")
+            source = (self.games_root / game_id).resolve()
+            if self.games_root not in source.parents:
+                raise ValueError("照片來源路徑無效。")
+            for photo in source.glob("*.jpg"):
+                if self.games_root not in photo.resolve().parents:
+                    continue
+                output = destination / photo.name
+                stat = photo.stat()
+                if output.is_file() and output.stat().st_size == stat.st_size and output.stat().st_mtime_ns == stat.st_mtime_ns:
+                    continue
+                temporary = output.with_suffix(".jpg.tmp")
+                try:
+                    shutil.copy2(photo, temporary)
+                    temporary.replace(output)
+                finally:
+                    temporary.unlink(missing_ok=True)
 
     def _battle_segments(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         """Read only explicitly linked predecessors, never infer a battle by time."""
