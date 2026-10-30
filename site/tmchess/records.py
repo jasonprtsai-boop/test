@@ -262,10 +262,10 @@ class GameRecordWriter:
         return target
 
     def _export_photos(self, target: Path, segments: list[dict[str, Any]]) -> None:
-        """Keep named photo archives directly in the records root's parent."""
+        """Keep named photo archives beneath one dedicated records-photo folder."""
         if self.games_root is None:
             return
-        destination = self.root.parent / target.stem
+        destination = self.root.parent / "遊戲紀錄照片" / target.stem
         destination.mkdir(parents=True, exist_ok=True)
         for segment in segments:
             game_id = str(segment["game_id"])

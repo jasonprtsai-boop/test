@@ -9,7 +9,7 @@ import shutil
 import threading
 import time
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -459,6 +459,21 @@ class GameService:
             if self._close_event.wait(5):
                 return
 
+    def set_engine_movetime(self, value):
+        return self._set_engine_limit("movetime_ms", value, 100, 10000)
+
+    def set_engine_depth(self, value):
+        return self._set_engine_limit("depth", value, 1, 30)
+
+    def _set_engine_limit(self, field, value, minimum, maximum):
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ValueError(f"設定必須是 {minimum} 到 {maximum} 的整數。")
+        with self._lock:
+            settings = replace(self.config.engine, **{field: value})
+            self.engine.config = settings
+            self.config = replace(self.config, engine=settings)
+            return {field: value}
+
     def get_state(self) -> dict[str, Any]:
         with self._lock:
             return self._get_state_locked()
@@ -466,6 +481,8 @@ class GameService:
     def _get_state_locked(self) -> dict[str, Any]:
         snapshot = self.store.snapshot()
         snapshot["instance_id"] = self._instance_id
+        snapshot["engine_movetime_ms"] = self.config.engine.movetime_ms
+        snapshot["engine_depth"] = self.config.engine.depth
         pose_time = snapshot["robot"].get("pose_updated_at")
         if pose_time:
             try:

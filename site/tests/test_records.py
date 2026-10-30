@@ -30,7 +30,7 @@ class GameRecordTests(unittest.TestCase):
         segments = [{'game_id': game_id} for game_id in ids]
         self.records._export_photos(target, segments)
         self.assertEqual(target.stem, '測試者_2026-10-28_09-00-00_12345678')
-        destination = self.records.root.parent / target.stem
+        destination = self.records.root.parent / '遊戲紀錄照片' / target.stem
         self.assertEqual(len(list(destination.glob('*.jpg'))), 2)
         self.assertFalse(target.with_suffix('').exists())
         photo = destination / 'capture_0_v1.jpg'

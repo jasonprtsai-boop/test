@@ -22,6 +22,36 @@
   const drawRate = document.querySelector("#drawRate");
   const blackWin = document.querySelector("#blackWin");
   const analysisLines = document.querySelector("#analysisLines");
+  const depthInput = document.querySelector("#engineDepth");
+  const depthButton = document.querySelector("#applyDepth");
+  let depthInitialized = false;
+  depthButton.addEventListener("click", async () => {
+    if (!depthInput.reportValidity()) return;
+    depthButton.disabled = true;
+    const status = document.querySelector("#depthStatus");
+    try {
+      const result = await TMChess.request("/api/engine/depth", {
+        method: "POST", body: JSON.stringify({depth: Number(depthInput.value)})
+      });
+      status.textContent = `已套用深度 ${result.depth}；下次搜尋生效。時間先達上限時，實際深度可能較低。`;
+    } catch (error) { status.textContent = error.message; }
+    finally { depthButton.disabled = false; }
+  });
+  const timeInput = document.querySelector("#engineMovetime");
+  const timeButton = document.querySelector("#applyMovetime");
+  let timeInitialized = false;
+  timeButton.addEventListener("click", async () => {
+    if (!timeInput.reportValidity()) return;
+    timeButton.disabled = true;
+    const status = document.querySelector("#movetimeStatus");
+    try {
+      const result = await TMChess.request("/api/engine/movetime", {
+        method: "POST", body: JSON.stringify({movetime_ms: Number(timeInput.value)})
+      });
+      status.textContent = `已套用 ${result.movetime_ms} 毫秒；下次搜尋生效。達到深度上限會提早結束。`;
+    } catch (error) { status.textContent = error.message; }
+    finally { timeButton.disabled = false; }
+  });
   let pending = false;
   let suggestedGame = null;
   let latestState = null;
@@ -87,6 +117,14 @@
   function render(state) {
     state = TMChess.newestState(latestState, state);
     latestState = state;
+    if (!depthInitialized && Number.isInteger(state.engine_depth)) {
+      depthInput.value = state.engine_depth;
+      depthInitialized = true;
+    }
+    if (!timeInitialized && Number.isInteger(state.engine_movetime_ms)) {
+      timeInput.value = state.engine_movetime_ms;
+      timeInitialized = true;
+    }
     const resumeAvailable = Boolean(state.resume?.available);
     const resumableError = state.phase === "ERROR" && resumeAvailable && !state.controls.can_retry;
     const setupRecovery = state.phase === "ERROR" && !state.controls.can_retry &&

@@ -126,6 +126,22 @@ def create_ui_app(
     def state():
         return jsonify(service.get_state())
 
+    @app.post("/api/engine/depth")
+    def engine_depth():
+        body = request.get_json(silent=True)
+        try:
+            return jsonify(service.set_engine_depth(body.get("depth") if isinstance(body, dict) else None))
+        except ValueError as exc:
+            return jsonify({"error": {"code": "invalid_depth", "message": str(exc)}}), 400
+
+    @app.post("/api/engine/movetime")
+    def engine_movetime():
+        body = request.get_json(silent=True)
+        try:
+            return jsonify(service.set_engine_movetime(body.get("movetime_ms") if isinstance(body, dict) else None))
+        except ValueError as exc:
+            return jsonify({"error": {"code": "invalid_movetime", "message": str(exc)}}), 400
+
     @app.post("/api/game/reset-page")
     def reset_page():
         return jsonify(service.submit_reset_page())

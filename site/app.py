@@ -39,7 +39,7 @@ def main() -> None:
     log_root.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        format="%(asctime)s %(levelname)s pid=%(process)d thread=%(threadName)s %(name)s %(message)s",
         handlers=[
             logging.StreamHandler(),
             RotatingFileHandler(

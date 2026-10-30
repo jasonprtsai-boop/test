@@ -1,5 +1,7 @@
 from dataclasses import replace
 import random
+import logging
+from logging.handlers import RotatingFileHandler
 import struct
 import tempfile
 import threading
@@ -15,6 +17,60 @@ from tests.fakes import FakeEngine, FakePreflight, FakeRobot, FakeVision
 
 
 class RobotProtocolTests(unittest.TestCase):
+    def test_diagnostics_are_persisted_to_utf8_log(self):
+        adapter = TMRobotAdapter(CONFIG.network, CONFIG.motion)
+        sock = Mock()
+        sock.sendall.side_effect = ConnectionResetError("測試斷線")
+        logger = logging.getLogger("tmchess.robot")
+        previous_level = logger.level
+        with tempfile.TemporaryDirectory(dir=SITE_ROOT) as directory:
+            path = Path(directory) / "system.log"
+            handler = RotatingFileHandler(path, maxBytes=10240, backupCount=1, encoding="utf-8")
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+            try:
+                with self.assertRaises(ConnectionResetError):
+                    adapter._set_gripper(sock, False, ignore_stop=True)
+            finally:
+                logger.removeHandler(handler)
+                logger.setLevel(previous_level)
+                handler.close()
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("cleanup=True", text)
+            self.assertIn("send_attempt id=DO", text)
+            self.assertIn("測試斷線", text)
+            self.assertNotIn("command_ack id=", text)
+
+    def test_connection_reset_records_command_and_preserves_exception(self):
+        adapter = TMRobotAdapter(CONFIG.network, CONFIG.motion)
+        sock = Mock()
+        failure = ConnectionResetError("connection lost before acknowledgement")
+        sock.recv.side_effect = failure
+        with self.assertLogs("tmchess.robot", level="INFO") as captured:
+            with self.assertRaises(ConnectionResetError) as caught:
+                adapter._send_script(sock, "test command", "DO")
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(sock.sendall.call_count, 1)
+        log = "\n".join(captured.output)
+        self.assertIn("script=test command", log)
+        self.assertIn("error_type=ConnectionResetError", log)
+        self.assertIn("physical_vacuum=unmeasured", log)
+        self.assertNotIn("command_ack id=", log)
+
+    def test_gripper_ack_does_not_claim_physical_suction(self):
+        adapter = TMRobotAdapter(CONFIG.network, CONFIG.motion)
+        sock = Mock()
+        sock.recv.return_value = b"DO00001,OK"
+        with self.assertLogs("tmchess.robot", level="INFO") as captured:
+            adapter._set_gripper(sock, True)
+        self.assertTrue(adapter._last_gripper_ack)
+        self.assertIn("physical_vacuum=unmeasured", "\n".join(captured.output))
+        sock.sendall.side_effect = BrokenPipeError("closed")
+        with self.assertLogs("tmchess.robot", level="ERROR"):
+            with self.assertRaises(BrokenPipeError):
+                adapter._set_gripper(sock, False, ignore_stop=True)
+        self.assertTrue(adapter._last_gripper_ack)
+
     def test_move_returns_to_camera_after_release_and_preserves_landing_pose(self):
         for captured in (0, 7):
             with self.subTest(captured=captured):
@@ -501,6 +557,7 @@ class RobotProtocolTests(unittest.TestCase):
         with self.assertRaises(GripperStateUnknown) as caught:
             adapter._execute_move_in_session(object(), move, threading.Event())
         self.assertIn("原始流程錯誤：ConnectionResetError: reset", str(caught.exception))
+        self.assertTrue(str(caught.exception).startswith("原始流程錯誤："))
         self.assertIn("關閉失敗原因：ConnectionResetError: cannot send off", str(caught.exception))
         self.assertIsInstance(caught.exception.__cause__, ConnectionResetError)
 

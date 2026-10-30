@@ -7,6 +7,16 @@
 
 <section class="section-shell player-layout">
   <article class="panel control-panel">
+    <section>
+      <label for="engineDepth">AI 搜尋深度</label>
+      <input id="engineDepth" type="number" min="1" max="30" step="1" required value="2" class="full">
+      <button id="applyDepth" type="button" class="button full">套用搜尋深度</button>
+      <p id="depthStatus" class="setup-message" role="status">可設定 1–30；下次搜尋生效。時間先達上限時，實際深度可能較低；重啟恢復預設。</p>
+      <label for="engineMovetime">AI 思考時間上限（毫秒）</label>
+      <input id="engineMovetime" type="number" min="100" max="10000" step="1" required value="500" class="full">
+      <button id="applyMovetime" type="button" class="button full">套用思考時間</button>
+      <p id="movetimeStatus" class="setup-message" role="status">100–10000 毫秒；下次搜尋生效。達到深度上限會提早結束；重啟恢復預設。</p>
+    </section>
     <div id="setupSection">
       <div id="lastResultSection" class="safety-banner ready" role="status" aria-live="polite" hidden>
         <span id="lastResultMessage"></span>

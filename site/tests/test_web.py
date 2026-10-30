@@ -35,6 +35,21 @@ class WebTests(unittest.TestCase):
         self.service.close()
         self.temp.cleanup()
 
+    def test_engine_limits_update_and_validate(self):
+        for field, low, high in (("depth", 1, 30), ("movetime_ms", 100, 10000)):
+            endpoint = "/api/engine/" + ("depth" if field == "depth" else "movetime")
+            for value in (low, high):
+                response = self.client.post(endpoint, json={field: value})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(getattr(self.service.engine.config, field), value)
+                self.assertEqual(getattr(self.service.config.engine, field), value)
+                self.assertEqual(self.service.get_state()["engine_" + field], value)
+            for value in (low - 1, high + 1, True, 1.5, "2", None):
+                self.assertEqual(self.client.post(endpoint, json={field: value}).status_code, 400)
+                self.assertEqual(getattr(self.service.engine.config, field), high)
+        self.assertEqual(self.service.engine.config.depth, 30)
+        self.assertEqual(self.service.engine.config.movetime_ms, 10000)
+
     def test_page_reset_clears_stopped_verification_error(self):
         self.service.store.update(lambda state: state.update(
             phase="STOPPED", first_actor="player",

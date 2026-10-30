@@ -15,6 +15,7 @@ import socket
 import struct
 import threading
 import time
+from functools import wraps
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -24,6 +25,30 @@ from .config import SITE_ROOT, MotionConfig, NetworkConfig
 
 Pose = tuple[float, float, float, float, float, float]
 LOGGER = logging.getLogger(__name__)
+
+
+def traced_robot_io(method):
+    """Record failures without retrying commands or changing robot behavior."""
+    @wraps(method)
+    def traced(self, *args, **kwargs):
+        started = time.monotonic()
+        try:
+            return method(self, *args, **kwargs)
+        except Exception as exc:
+            LOGGER.exception(
+                "[ROBOT_DIAG] operation=%s target=%s:%s elapsed_ms=%.1f "
+                "error_type=%s errno=%s winerror=%s last_pose=%s "
+                "pose_age_seconds=%s last_gripper_command_ack=%s "
+                "physical_vacuum=unmeasured",
+                method.__name__, self.network.robot_ip, self.network.robot_listen_port,
+                (time.monotonic() - started) * 1000, type(exc).__name__,
+                getattr(exc, "errno", None), getattr(exc, "winerror", None),
+                self._last_pose,
+                None if self._last_pose_at is None else round(time.monotonic() - self._last_pose_at, 3),
+                self._last_gripper_ack,
+            )
+            raise
+    return traced
 
 
 class StopRequested(RuntimeError):
@@ -111,6 +136,9 @@ class TMRobotAdapter:
         self.callbacks = callbacks or RobotCallbacks()
         self._random = random_source or random.Random()
         self._ids = itertools.count(1)
+        self._last_pose: Pose | None = None
+        self._last_pose_at: float | None = None
+        self._last_gripper_ack: bool | None = None
         self._lock = threading.Lock()
         self._hardware_lease = HardwareLease(SITE_ROOT / "runtime" / "tm5-hardware.lock")
 
@@ -126,6 +154,7 @@ class TMRobotAdapter:
     def _script_id(self, prefix: str) -> str:
         return f"{prefix}{next(self._ids) % 100000:05d}"
 
+    @traced_robot_io
     def _connect(self) -> socket.socket:
         self._hardware_lease.acquire()
         # Retry only connection establishment: no script has been sent yet.
@@ -164,9 +193,12 @@ class TMRobotAdapter:
         if b"$CPERR," in buffer:
             raise RuntimeError(f"Robot 通訊協定錯誤（指令：{script}）：{buffer!r}")
 
+    @traced_robot_io
     def _send_script(self, sock: socket.socket, script: str, prefix: str) -> bytes:
         script_id = self._script_id(prefix)
+        LOGGER.info("[ROBOT_DIAG] send_attempt id=%s script=%s", script_id, script)
         sock.sendall(self.make_packet(script_id, script))
+        LOGGER.info("[ROBOT_DIAG] sent id=%s awaiting=controller_ack", script_id)
         expected = f"{script_id},OK".encode("ascii")
         deadline = time.monotonic() + self.motion.socket_timeout_seconds
         buffer = b""
@@ -178,8 +210,10 @@ class TMRobotAdapter:
             if not data:
                 raise ConnectionError(f"Robot 已關閉 Listen 連線（等待指令回覆：{script}）。")
             buffer += data
+            LOGGER.info("[ROBOT_DIAG] received id=%s bytes=%s tail=%r", script_id, len(data), data[-512:])
             self._raise_protocol_error(buffer, script)
             if expected in buffer:
+                LOGGER.info("[ROBOT_DIAG] command_ack id=%s physical_completion=unconfirmed", script_id)
                 return buffer
         raise TimeoutError(f"等待 Robot 回覆逾時：{script}")
 
@@ -212,9 +246,11 @@ class TMRobotAdapter:
             start = buffer.find(marker, start + 1)
         return None
 
+    @traced_robot_io
     def _read_pose(self, sock: socket.socket) -> Pose:
         script_id = self._script_id("POS")
         script = "ListenSend(90,Robot[0].CoordRobot)"
+        LOGGER.info("[ROBOT_DIAG] pose_request id=%s", script_id)
         sock.sendall(self.make_packet(script_id, script))
         expected = f"{script_id},OK".encode("ascii")
         deadline = time.monotonic() + self.motion.socket_timeout_seconds
@@ -228,9 +264,13 @@ class TMRobotAdapter:
             if not data:
                 raise ConnectionError("Robot 已關閉 Listen 連線（等待 Pose 回覆）。")
             buffer += data
+            LOGGER.info("[ROBOT_DIAG] pose_received id=%s bytes=%s tail=%r", script_id, len(data), data[-128:])
             self._raise_protocol_error(buffer, script)
             pose = pose or self.parse_pose_packet(buffer)
             if pose is not None and expected in buffer:
+                self._last_pose = pose
+                self._last_pose_at = time.monotonic()
+                LOGGER.info("[ROBOT_DIAG] pose_confirmed id=%s pose=%s", script_id, pose)
                 self.callbacks.pose(pose)
                 return pose
         missing = []
@@ -280,8 +320,11 @@ class TMRobotAdapter:
             self._guard_not_stopped(stop_event)
         value = 1 if enabled else 0
         script = f'IO["{self.motion.gripper_do_device}"].DO[{self.motion.gripper_do_pin}] = {value}'
+        LOGGER.info("[ROBOT_DIAG] gripper_request enabled=%s cleanup=%s device=%s pin=%s",
+                    enabled, ignore_stop, self.motion.gripper_do_device, self.motion.gripper_do_pin)
         self._send_script(sock, script, "DO")
-        LOGGER.info("[ROBOT] gripper output confirmed state=%s", "on" if enabled else "off")
+        self._last_gripper_ack = enabled
+        LOGGER.info("[ROBOT] gripper command accepted state=%s physical_vacuum=unmeasured", "on" if enabled else "off")
 
     def _send_line(
         self,
@@ -393,6 +436,7 @@ class TMRobotAdapter:
             time.sleep(self.motion.pose_poll_seconds)
         raise TimeoutError("Robot Pose 未在等待時間內穩定；不能確認動作已停止。")
 
+    @traced_robot_io
     def _move_to(
         self,
         sock: socket.socket,
@@ -403,6 +447,7 @@ class TMRobotAdapter:
         stop_event: threading.Event | None = None,
     ) -> None:
         self._guard_not_stopped(stop_event)
+        LOGGER.info("[ROBOT_DIAG] motion_begin target_pose=%s", pose)
         self._send_line(
             sock,
             pose,
@@ -411,6 +456,7 @@ class TMRobotAdapter:
             stop_event=stop_event,
         )
         self._wait_until_pose(sock, pose, stop_event=stop_event)
+        LOGGER.info("[ROBOT_DIAG] motion_arrived target_pose=%s", pose)
 
     def _xy_for_cell(self, position: Position) -> tuple[float, float]:
         col, row = position
@@ -661,8 +707,8 @@ class TMRobotAdapter:
                         if primary_error is not None else ""
                     )
                     raise GripperStateUnknown(
-                        "吸盤關閉命令失敗，實際輸出狀態不明；禁止繼續自動動作。"
-                        + original
+                        (original.strip() + " " if original else "")
+                        + "吸盤關閉命令未獲確認，實際輸出狀態不明；不代表已確認吸盤硬體故障。禁止繼續自動動作。"
                         + f" 關閉失敗原因：{type(exc).__name__}: {exc}"
                     ) from exc
 
