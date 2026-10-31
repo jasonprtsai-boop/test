@@ -53,7 +53,7 @@ class MotionConfig:
     # Measured with the installed suction assembly while TMflow uses
     # RobotBase + NOTOOL. Motion remains locked until the missing board
     # geometry and every safety sign-off are completed.
-    z_safe: Optional[float] = 420.0
+    z_safe: Optional[float] = 380.0
     # First camera/standby position confirmed by the operator on 2026-10-27.
     # RobotBase + NOTOOL; orientation follows orientation_rxyz.
     standby_xyz: Tuple[float, float, float] = (330.08, 80.60, 578.92)
@@ -67,7 +67,7 @@ class MotionConfig:
     # records that deliberate on-site suction contact calibration.
     piece_height_tolerance_mm: float = 2.5
     graveyard_xy: Optional[Tuple[float, float]] = (128.0, -265.0)
-    graveyard_z_safe: Optional[float] = 525.0
+    graveyard_z_safe: Optional[float] = 380.0
     graveyard_z_approach: Optional[float] = 350.0
     graveyard_z_release: Optional[float] = 340.0
     graveyard_opening_xy: Optional[Tuple[float, float]] = (110.0, 110.0)
@@ -79,6 +79,7 @@ class MotionConfig:
     gripper_do_device: str = "ControlBox"
     gripper_do_pin: int = 3
     speed: int = 50
+    pick_contact_speed: int = 10
     acceleration: int = 200
     blend: int = 0
     precise: str = "false"
@@ -150,6 +151,7 @@ class MotionConfig:
         )
 
     def missing_fields(self) -> list[str]:
+        # The pickup descent must slow monotonically and retain a final segment.
         required = {
             "棋盤上下半區參考 XY": self.board_reference_xy,
             "姿態 RX/RY/RZ": self.orientation_rxyz,
@@ -169,6 +171,8 @@ class MotionConfig:
             "TCP 名稱": self.tcp_name,
         }
         missing = [name for name, value in required.items() if value is None]
+        if not 0 < self.pick_contact_speed <= self.speed:
+            missing.append("吸棋速度須滿足 0 < 接觸速度 <= 移動速度")
         if (
             len(self.standby_xyz) != 3
             or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in self.standby_xyz)

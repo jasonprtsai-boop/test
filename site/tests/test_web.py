@@ -35,6 +35,25 @@ class WebTests(unittest.TestCase):
         self.service.close()
         self.temp.cleanup()
 
+    def test_engine_limits_require_trusted_origin_and_json(self):
+        client = self.ui.test_client()
+        for endpoint, field, value in (
+            ("/api/engine/depth", "depth", 1),
+            ("/api/engine/movetime", "movetime_ms", 100),
+        ):
+            original = getattr(self.service.config.engine, field)
+            for origin in (None, "http://attacker.example", "null", "http://localhost:1"):
+                with self.subTest(endpoint=endpoint, origin=origin):
+                    response = client.post(endpoint, json={field: value},
+                                           headers={} if origin is None else {"Origin": origin})
+                    self.assertEqual(response.status_code, 403)
+                    self.assertEqual(response.get_json()["error"]["code"], "origin_not_allowed")
+                    self.assertEqual(getattr(self.service.config.engine, field), original)
+            response = client.post(endpoint, data={field: value}, headers={
+                "Origin": f"http://localhost:{self.config.network.ui_port}"})
+            self.assertEqual(response.status_code, 415)
+            self.assertEqual(getattr(self.service.config.engine, field), original)
+
     def test_engine_limits_update_and_validate(self):
         for field, low, high in (("depth", 1, 30), ("movetime_ms", 100, 10000)):
             endpoint = "/api/engine/" + ("depth" if field == "depth" else "movetime")

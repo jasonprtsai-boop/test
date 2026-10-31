@@ -108,6 +108,7 @@ class BoardMatrixInspector:
         *,
         before_point: Callable[[InspectionPoint], None] | None = None,
     ) -> None:
+        self._guard()
         self.profile.validate(self.motion, allow_below_safe_z=self.allow_below_safe_z)
         selected = tuple(points)
         if not selected:
@@ -118,7 +119,8 @@ class BoardMatrixInspector:
         fixed_orientation = self.motion.orientation_rxyz
         p = self.profile
         with self.robot._lock, self.robot._connect() as sock:
-            self.robot._set_gripper(sock, False)
+            self._guard()
+            self.robot._set_gripper(sock, False, self.stop_event)
             current = self.robot._read_pose(sock)
             self._guard()
 
@@ -126,24 +128,26 @@ class BoardMatrixInspector:
             # orientation. Inter-point travel then follows the operator-requested
             # Z=380 profile.
             current_safe = (current[0], current[1], self.motion.z_safe, current[3], current[4], current[5])
-            self.robot._move_to(sock, current_safe, speed=p.travel_speed, acceleration=p.acceleration)
+            self.robot._move_to(sock, current_safe, speed=p.travel_speed, acceleration=p.acceleration, stop_event=self.stop_event)
             fixed_safe = (current[0], current[1], self.motion.z_safe, *fixed_orientation)
-            self.robot._move_to(sock, fixed_safe, speed=p.travel_speed, acceleration=p.acceleration)
+            self.robot._move_to(sock, fixed_safe, speed=p.travel_speed, acceleration=p.acceleration, stop_event=self.stop_event)
 
             for index, point in enumerate(selected):
                 self._guard()
                 if before_point is not None:
                     before_point(point)
+                self._guard()
                 if index == 0:
                     above_first = (point.x, point.y, self.motion.z_safe, *fixed_orientation)
-                    self.robot._move_to(sock, above_first, speed=p.travel_speed, acceleration=p.acceleration)
+                    self.robot._move_to(sock, above_first, speed=p.travel_speed, acceleration=p.acceleration, stop_event=self.stop_event)
 
                 travel = (point.x, point.y, p.travel_z, *fixed_orientation)
                 approach = (point.x, point.y, p.approach_z, *fixed_orientation)
                 target = (point.x, point.y, p.inspection_z, *fixed_orientation)
-                self.robot._move_to(sock, travel, speed=p.travel_speed, acceleration=p.acceleration)
-                self.robot._move_to(sock, approach, speed=p.approach_speed, acceleration=p.acceleration)
-                self.robot._move_to(sock, target, speed=p.inspection_speed, acceleration=p.acceleration)
+                self.robot._move_to(sock, travel, speed=p.travel_speed, acceleration=p.acceleration, stop_event=self.stop_event)
+                self.robot._move_to(sock, approach, speed=p.approach_speed, acceleration=p.acceleration, stop_event=self.stop_event)
+                self.robot._move_to(sock, target, speed=p.inspection_speed, acceleration=p.acceleration, stop_event=self.stop_event)
+                self._guard()
                 actual = self.robot._read_pose(sock)
                 error = math.sqrt(sum((actual[i] - target[i]) ** 2 for i in range(3)))
                 on_record(InspectionRecord(point, target, actual, error))
@@ -152,8 +156,10 @@ class BoardMatrixInspector:
                 while time.monotonic() < deadline:
                     self._guard()
                     time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
-                self.robot._move_to(sock, travel, speed=p.approach_speed, acceleration=p.acceleration)
+                self._guard()
+                self.robot._move_to(sock, travel, speed=p.approach_speed, acceleration=p.acceleration, stop_event=self.stop_event)
 
+            self._guard()
             last = selected[-1]
             final_safe = (last.x, last.y, self.motion.z_safe, *fixed_orientation)
-            self.robot._move_to(sock, final_safe, speed=p.travel_speed, acceleration=p.acceleration)
+            self.robot._move_to(sock, final_safe, speed=p.travel_speed, acceleration=p.acceleration, stop_event=self.stop_event)

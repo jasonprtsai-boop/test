@@ -32,6 +32,26 @@ class RecordAuditTests(unittest.TestCase):
         self.assertEqual(frames[-1]['board'], payload['board'])
         self.assertEqual(payload, original)
 
+    def test_malformed_records_return_issues_without_crashing(self):
+        for payload in (None, [], "invalid"):
+            with self.subTest(payload=payload):
+                frames, issues = audit_history(payload)
+                self.assertEqual(frames, [])
+                self.assertTrue(issues)
+        for item in (None, [], {"uci": None}, {"uci": 123}):
+            payload = self.payload()
+            payload["move_history"] = [item]
+            frames, issues = audit_history(payload)
+            self.assertEqual(len(frames), 1)
+            self.assertTrue(issues)
+
+    def test_friendly_capture_is_rejected_before_reconstruction(self):
+        payload = self.payload()
+        payload["move_history"] = [{"uci": "a0b0"}]
+        frames, issues = audit_history(payload)
+        self.assertEqual(len(frames), 1)
+        self.assertTrue(any("己方" in issue for issue in issues))
+
     def test_mismatched_side_and_fen_are_explicit(self):
         payload = self.payload()
         payload['side_to_move'] = 'w'

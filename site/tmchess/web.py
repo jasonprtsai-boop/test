@@ -61,7 +61,7 @@ def create_ui_app(
         TRUSTED_HOSTS=["127.0.0.1", "localhost"],
     )
 
-    protected_post_prefixes = ("/api/game/", "/api/operator/")
+    protected_post_prefixes = ("/api/game/", "/api/operator/", "/api/engine/")
     # Leave at least four of the eight UI workers available for controls.
     event_slots = threading.BoundedSemaphore(4)
 
@@ -241,6 +241,11 @@ def create_ui_app(
     @app.post("/api/game/stop")
     def stop():
         return jsonify(service.submit_stop()), 202
+
+    @app.post("/api/game/finish")
+    def finish():
+        payload = body()
+        return jsonify(service.submit_finish(payload.get("reason"), payload.get("confirmed"))), 200
 
     @app.get("/api/game/record")
     def game_record():

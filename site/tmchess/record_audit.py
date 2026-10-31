@@ -5,6 +5,8 @@ from .board import Move, apply_move, board_to_fen, clone_board, is_red, parse_uc
 def audit_history(payload):
     frames, issues = [], []
     try:
+        if not isinstance(payload, dict):
+            raise ValueError("對局紀錄必須是物件。")
         board = payload.get("initial_board")
         if board is None:
             return [], ["缺少初始盤面，無法重建逐步棋盤。"]
@@ -17,6 +19,8 @@ def audit_history(payload):
         if not isinstance(history, list):
             raise ValueError("缺少著法列表。")
         for sequence, item in enumerate(history, 1):
+            if not isinstance(item, dict) or not isinstance(item.get("uci"), str):
+                raise ValueError(f"第 {sequence} 步缺少有效的 UCI 著法字串。")
             source, destination = parse_uci_move(item["uci"])
             piece = board[source[1]][source[0]]
             if not piece or is_red(piece) != (side == "w"):
@@ -27,6 +31,8 @@ def audit_history(payload):
             if item.get("fen_before") and item["fen_before"] != before:
                 issues.append(f"第 {sequence} 步 FEN 前不一致。")
             captured = board[destination[1]][destination[0]]
+            if captured and is_red(captured) == is_red(piece):
+                raise ValueError(f"第 {sequence} 步不可吃掉己方棋子。")
             if item.get("captured_piece_id") not in (None, captured):
                 issues.append(f"第 {sequence} 步被吃棋子不一致。")
             board = apply_move(board, Move(source, destination, captured, item["uci"]))

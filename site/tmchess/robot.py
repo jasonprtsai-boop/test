@@ -484,6 +484,14 @@ class TMRobotAdapter:
         if self.motion.z_safe is None or self.motion.orientation_rxyz is None:
             raise RuntimeError("安全高度或固定姿態尚未設定。")
         self._guard_not_stopped(stop_event)
+        standby = self.motion.standby_xyz
+        standby_pose = self._pose(standby[:2], standby[2])
+        if (current[2] >= self.motion.z_safe
+                and self._xyz_distance(current, standby_pose) <= self.motion.position_tolerance_mm
+                and self._orientation_error(current, standby_pose) <= self.motion.orientation_tolerance_deg):
+            # Only the known standby pose may enter diagonally; _transfer's
+            # first target remains the source safe point at Z_SAFE.
+            return
         entry_z = max(current[2], self.motion.z_safe)
         current_safe: Pose = (
             current[0], current[1], entry_z,
@@ -499,10 +507,7 @@ class TMRobotAdapter:
         if self._orientation_error(current_safe, oriented_safe) > self.motion.orientation_tolerance_deg:
             self.callbacks.action("在安全高度套用固定姿態", "移動至棋盤目標")
             self._move_to(sock, oriented_safe, stop_event=stop_event)
-        # A camera/standby pose can be above Z_SAFE. Keeping that height here
-        # made the first board move a diagonal descent instead of a horizontal
-        # transfer on the configured plane. Descend at the current XY first,
-        # only after orientation has been established above the safe plane.
+        # Other starting poses retain vertical entry and orientation correction.
         transfer_pose: Pose = (
             current[0], current[1], self.motion.z_safe,
             *self.motion.orientation_rxyz,
@@ -525,26 +530,31 @@ class TMRobotAdapter:
             self.motion.z_approach,
             self.motion.z_pick,
         )
-        destination_safe_z, destination_approach_z, destination_release_z = destination_heights
+        # Destination approach remains in the interface but is not a stop.
+        destination_safe_z, _destination_approach_z, destination_release_z = destination_heights
         safe_source = self._pose(source_xy, self.motion.z_safe)
-        approach_source = self._pose(source_xy, self.motion.z_approach)
         pick_source = self._pose(
             source_xy,
             self.motion.z_pick if source_pick_z is None else source_pick_z,
         )
         safe_destination = self._pose(destination_xy, destination_safe_z)
-        approach_destination = self._pose(destination_xy, destination_approach_z)
         place_destination = self._pose(destination_xy, destination_release_z)
-        for pose in (safe_source, approach_source, pick_source):
+        approach_source = self._pose(source_xy, self.motion.z_approach)
+        if not (safe_source[2] > approach_source[2] > pick_source[2]
+                and 0 < self.motion.pick_contact_speed <= self.motion.speed):
+            raise ValueError("吸棋分段高度或遞減速度設定無效。")
+        for pose in (safe_source, approach_source):
             self._move_to(sock, pose, stop_event=stop_event)
+        self._move_to(sock, pick_source, speed=self.motion.pick_contact_speed, stop_event=stop_event)
         self._set_gripper(sock, True, stop_event)
         time.sleep(self.motion.vacuum_settle_seconds)
-        for pose in (approach_source, safe_source, safe_destination, approach_destination, place_destination):
+        # Preserve vertical clearance before lateral travel and a full arrival
+        # check at contact; ascent and placement retain the shortened path.
+        for pose in (safe_source, safe_destination, place_destination):
             self._move_to(sock, pose, stop_event=stop_event)
         self._set_gripper(sock, False, stop_event)
         time.sleep(self.motion.release_settle_seconds)
-        for pose in (approach_destination, safe_destination):
-            self._move_to(sock, pose, stop_event=stop_event)
+        self._move_to(sock, safe_destination, stop_event=stop_event)
 
     def _graveyard_drop_xy(self) -> tuple[float, float]:
         center = self.motion.graveyard_xy
@@ -616,8 +626,8 @@ class TMRobotAdapter:
                 self.callbacks.action("回到第一拍照安全點", "確認到位後提交棋步並切換回合")
                 return_started = time.monotonic()
                 standby = self.motion.standby_xyz
-                self._move_to(sock, self._pose(standby[:2], self.motion.z_safe), stop_event=stop_event)
                 self._move_to(sock, self._pose(standby[:2], standby[2]), stop_event=stop_event)
+                self._guard_not_stopped(stop_event)
                 return_seconds = round(time.monotonic() - return_started, 3)
         return {
             "actual_x": landing_pose[0],

@@ -17,6 +17,31 @@ from tests.fakes import FakeEngine, FakePreflight, FakeRobot, FakeVision
 
 
 class RobotProtocolTests(unittest.TestCase):
+    def test_pickup_slows_before_suction_for_board_and_graveyard(self):
+        for heights in (None, (380.0, 350.0, 340.0)):
+            adapter = TMRobotAdapter(CONFIG.network, CONFIG.motion)
+            events = []
+            with patch.object(adapter, '_move_to', side_effect=lambda s, p, **kw: events.append(
+                    ('move', p[2], kw.get('speed', CONFIG.motion.speed)))), \
+                 patch.object(adapter, '_set_gripper', side_effect=lambda s, on, *a: events.append(('grip', on))), \
+                 patch('tmchess.robot.time.sleep') as sleep:
+                adapter._transfer(object(), (10, 20), (30, 40), heights)
+            self.assertEqual(events[:4], [
+                ('move', 380.0, 50), ('move', 355.0, 50),
+                ('move', 288.0, 10), ('grip', True)])
+            self.assertEqual(events[4], ('move', 380.0, 50))
+            self.assertEqual([c.args[0] for c in sleep.call_args_list], [0.4, 0.2])
+
+    def test_invalid_pickup_profile_prevents_motion(self):
+        for change in ({'pick_contact_speed': 60}, {'pick_contact_speed': 0}, {'z_approach': 280}):
+            motion = replace(CONFIG.motion, **change)
+            self.assertTrue(motion.missing_fields())
+            adapter = TMRobotAdapter(CONFIG.network, motion)
+            with patch.object(adapter, '_move_to') as move:
+                with self.assertRaises(ValueError):
+                    adapter._transfer(object(), (10, 20), (30, 40))
+                move.assert_not_called()
+
     def test_diagnostics_are_persisted_to_utf8_log(self):
         adapter = TMRobotAdapter(CONFIG.network, CONFIG.motion)
         sock = Mock()
@@ -84,18 +109,30 @@ class RobotProtocolTests(unittest.TestCase):
                 move = Move((0, 0), (0, 1), captured, "a0a1")
                 landing = adapter._pose(adapter._xy_for_cell(move.destination), CONFIG.motion.z_safe)
                 commands = []
-                with patch.object(adapter, '_open_listen_session', return_value=(sock, landing)), \
-                     patch.object(adapter, '_enter_safe_plane'), \
+                standby = adapter._pose(CONFIG.motion.standby_xyz[:2], CONFIG.motion.standby_xyz[2])
+                with patch.object(adapter, '_open_listen_session', return_value=(sock, standby)), \
                      patch.object(adapter, '_send_line', side_effect=lambda s, p, **kw: commands.append(('move', p))), \
                      patch.object(adapter, '_wait_until_pose'), \
                      patch.object(adapter, '_read_pose', return_value=landing), \
                      patch.object(adapter, '_set_gripper', side_effect=lambda s, enabled, *args, **kw: commands.append(('grip', enabled))):
                     report = adapter.execute_move(move, stop)
-                self.assertEqual(commands[-2:], [
-                    ('move', (330.08, 80.60, 420.0, -180.0, 0.0, 80.0)),
+                self.assertEqual(commands[-1:], [
                     ('move', (330.08, 80.60, 578.92, -180.0, 0.0, 80.0)),
                 ])
                 self.assertEqual([v for k, v in commands if k == 'grip'][-1], False)
+                self.assertEqual(sum(k == 'move' for k, _ in commands), 15 if captured else 8)
+                first_cell = move.destination if captured else move.source
+                self.assertEqual(commands[0], ('move', adapter._pose(adapter._xy_for_cell(first_cell), 380.0)))
+                # Suction changes only at contact/release, followed by a direct
+                # vertical ascent to the corresponding safe height.
+                for index, (kind, value) in enumerate(commands):
+                    if kind != 'grip':
+                        continue
+                    before = commands[index - 1][1]
+                    after = commands[index + 1][1]
+                    self.assertEqual(before[:2], after[:2])
+                    self.assertEqual(before[3:], after[3:])
+                    self.assertIn((before[2], after[2]), ((288.0, 380.0), (340.0, 380.0)))
                 self.assertEqual(report['actual_x'], landing[0])
                 self.assertEqual(report['position_error_mm'], 0)
 
@@ -131,7 +168,7 @@ class RobotProtocolTests(unittest.TestCase):
         from tmchess.service import GameService
         service = GameService.__new__(GameService)
         service.store = Mock()
-        record = {'actual_x': 200.0, 'actual_y': 100.0, 'actual_z': 420.0,
+        record = {'actual_x': 200.0, 'actual_y': 100.0, 'actual_z': 380.0,
                   'position_error_mm': 0.01, 'orientation_error_deg': 0.002}
         expected = record.copy()
         service._complete_motion_record(record)
@@ -453,7 +490,7 @@ class RobotProtocolTests(unittest.TestCase):
             (motion.graveyard_z_safe, motion.graveyard_z_approach, motion.graveyard_z_release),
         )
         destination_z = [pose[2] for pose in adapter.poses if pose[:2] == (128.0, -265.0)]
-        self.assertEqual(destination_z, [525.0, 350.0, 340.0, 350.0, 525.0])
+        self.assertEqual(destination_z, [380.0, 340.0, 380.0])
 
     def test_board_transfer_uses_fixed_288_for_pick_and_release(self):
         motion = replace(
@@ -474,8 +511,17 @@ class RobotProtocolTests(unittest.TestCase):
 
         source_z = [pose[2] for pose in adapter.poses if pose[:2] == (10.0, 20.0)]
         destination_z = [pose[2] for pose in adapter.poses if pose[:2] == (30.0, 40.0)]
-        self.assertEqual(source_z, [420.0, 355.0, 288.0, 355.0, 420.0])
-        self.assertEqual(destination_z, [420.0, 355.0, 288.0, 355.0, 420.0])
+        self.assertEqual(source_z, [380.0, 355.0, 288.0, 380.0])
+        self.assertEqual(destination_z, [380.0, 288.0, 380.0])
+        self.assertEqual(adapter.poses, [
+            adapter._pose((10.0, 20.0), 380.0),
+            adapter._pose((10.0, 20.0), 355.0),
+            adapter._pose((10.0, 20.0), 288.0),
+            adapter._pose((10.0, 20.0), 380.0),
+            adapter._pose((30.0, 40.0), 380.0),
+            adapter._pose((30.0, 40.0), 288.0),
+            adapter._pose((30.0, 40.0), 380.0),
+        ])
 
     def test_safe_plane_entry_lifts_before_changing_orientation(self):
         class RecordingAdapter(TMRobotAdapter):
@@ -489,10 +535,10 @@ class RobotProtocolTests(unittest.TestCase):
         current = (250.0, -50.0, 300.0, 170.0, 5.0, 45.0)
         adapter._enter_safe_plane(object(), current, threading.Event())
 
-        self.assertEqual(adapter.poses[0], (250.0, -50.0, 420.0, 170.0, 5.0, 45.0))
-        self.assertEqual(adapter.poses[1], (250.0, -50.0, 420.0, -180.0, 0.0, 80.0))
+        self.assertEqual(adapter.poses[0], (250.0, -50.0, 380.0, 170.0, 5.0, 45.0))
+        self.assertEqual(adapter.poses[1], (250.0, -50.0, 380.0, -180.0, 0.0, 80.0))
 
-    def test_camera_pose_enters_safe_plane_before_board_transfer(self):
+    def test_camera_pose_enters_diagonally_at_source_safe_point(self):
         class RecordingAdapter(TMRobotAdapter):
             def __init__(self):
                 super().__init__(CONFIG.network, CONFIG.motion)
@@ -505,8 +551,16 @@ class RobotProtocolTests(unittest.TestCase):
         current = (330.08, 80.60, 578.92, -180.0, 0.0, 80.0)
         adapter._enter_safe_plane(object(), current, threading.Event())
         adapter._transfer(object(), (501.324, -198.949), (278.075, -65.085))
-        self.assertEqual(adapter.poses[0], (330.08, 80.60, 420.0, -180.0, 0.0, 80.0))
-        self.assertEqual(adapter.poses[1], (501.324, -198.949, 420.0, -180.0, 0.0, 80.0))
+        self.assertEqual(adapter.poses[0], (501.324, -198.949, 380.0, -180.0, 0.0, 80.0))
+
+    def test_unknown_or_rotated_high_pose_retains_vertical_entry(self):
+        adapter = TMRobotAdapter(CONFIG.network, CONFIG.motion)
+        for current in ((340.08, 80.60, 578.92, -180.0, 0.0, 80.0),
+                        (330.08, 80.60, 578.92, -180.0, 0.0, 90.0)):
+            with patch.object(adapter, '_move_to') as move:
+                adapter._enter_safe_plane(object(), current, threading.Event())
+                self.assertEqual(move.call_args.args[1], adapter._pose(current[:2], 380.0))
+                self.assertTrue(all(c.args[1][:2] == current[:2] for c in move.call_args_list))
 
     def test_safe_plane_failure_prevents_board_transfer(self):
         class FakeSocket:
@@ -515,7 +569,7 @@ class RobotProtocolTests(unittest.TestCase):
 
         class FailingEntryAdapter(TMRobotAdapter):
             def _open_listen_session(self):
-                return FakeSocket(), (330.08, 80.60, 578.92, -180.0, 0.0, 80.0)
+                return FakeSocket(), (340.08, 80.60, 578.92, -180.0, 0.0, 80.0)
             def _move_to(self, *_args, **_kwargs):
                 raise ConnectionError("entry failed")
             def _execute_move_in_session(self, *_args, **_kwargs):

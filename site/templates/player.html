@@ -81,10 +81,13 @@
         <button id="executeEngineButton" class="button primary" type="button" disabled hidden>確認並執行引擎著法</button>
         <button id="retryButton" class="button secondary" type="button" disabled hidden>還原後重試落子</button>
         <button id="stopButton" class="button danger" type="button" disabled>停止遊戲</button>
+        <button id="resignButton" class="button" type="button" disabled>認輸</button>
+        <button id="drawButton" class="button" type="button" disabled>現場判和</button>
       </div>
       <p class="player-safety-note">落子完成後不再拍照核對。若吸取或放置失敗，請停止流程，從現場盤面重新建立對局；棋盤取放高度固定為 Z=288，重試不會繼續下降。如有危險，請使用控制器上的實體 Emergency Stop。</p>
     </div>
     <p id="recordDestination" class="setup-message" role="status">開始對戰後顯示 Excel 儲存位置。</p>
+    <p id="historyStatus" class="setup-message" role="status"></p>
     <div id="errorBox" class="error-box" role="alert" aria-atomic="true" hidden></div>
   </article>
 </section>

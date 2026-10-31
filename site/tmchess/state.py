@@ -52,6 +52,7 @@ def initial_state() -> dict[str, Any]:
         "execution_mode": "automatic",
         "message": "系統待命；真機動作預設鎖定。",
         "last_move": None,
+        "game_result": None,
         "analysis": {
             "status": "idle",
             "side": None,

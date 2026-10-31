@@ -13,6 +13,8 @@
   const executeEngineButton = document.querySelector("#executeEngineButton");
   const retryButton = document.querySelector("#retryButton");
   const stopButton = document.querySelector("#stopButton");
+  const resignButton = document.querySelector("#resignButton");
+  const drawButton = document.querySelector("#drawButton");
   const errorBox = document.querySelector("#errorBox");
   const analysisPanel = document.querySelector("#analysisPanel");
   const analysisStatus = document.querySelector("#analysisStatus");
@@ -178,6 +180,11 @@
     retryButton.disabled = pending || !state.controls.can_retry;
     retryButton.hidden = !state.controls.can_retry;
     stopButton.disabled = !state.controls.can_stop;
+    resignButton.disabled = pending || !state.controls.can_finish || state.controllers?.[state.side_to_move] !== "human";
+    drawButton.disabled = pending || !state.controls.can_finish;
+    document.querySelector("#historyStatus").textContent = state.game?.id ?
+      (state.game.history_complete ? "本局棋譜可重播；實體落子依目前快速流程確認。" :
+        "棋譜尚不完整或有重新建立基準的缺口；不會自動補造歷史著法。") : "";
     document.querySelectorAll("input[name='gameMode']").forEach(input => {
       input.disabled = pending || !(state.controls.can_start || state.controls.can_start_current);
     });
@@ -240,6 +247,14 @@
   retryButton.addEventListener("click", () => command("/api/game/retry"));
 
   stopButton.addEventListener("click", () => command("/api/game/stop"));
+  resignButton.addEventListener("click", () => {
+    if (window.confirm("確認由目前行棋的玩家認輸？結果會保存，此局結束。"))
+      command("/api/game/finish", {reason: "resign", confirmed: true});
+  });
+  drawButton.addEventListener("click", () => {
+    if (window.confirm("確認現場已同意以和棋結束？這是人工判定，不代表引擎自動裁定。"))
+      command("/api/game/finish", {reason: "agreed_draw", confirmed: true});
+  });
   // Opening a view must never detach an active or resumable game.
   TMChess.connect(render);
 

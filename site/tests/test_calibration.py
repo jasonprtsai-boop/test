@@ -17,7 +17,7 @@ class BoardMatrixInspectionTests(unittest.TestCase):
         self.assertEqual((points[-1].player_row, points[-1].player_col), (9, 0))
 
     def test_requested_z_profile_requires_explicit_below_safe_acceptance(self):
-        profile = InspectionProfile()
+        profile = InspectionProfile(travel_z=370.0)
         with self.assertRaisesRegex(ValueError, "低於設定 Z_SAFE"):
             profile.validate(CONFIG.motion, allow_below_safe_z=False)
         profile.validate(CONFIG.motion, allow_below_safe_z=True)
@@ -54,13 +54,13 @@ class BoardMatrixInspectionTests(unittest.TestCase):
             def _connect(self):
                 return FakeSocket()
 
-            def _set_gripper(self, _sock, enabled):
+            def _set_gripper(self, _sock, enabled, stop_event=None):
                 self.gripper.append(enabled)
 
             def _read_pose(self, _sock):
                 return self.current
 
-            def _move_to(self, _sock, pose, *, speed=None, acceleration=None):
+            def _move_to(self, _sock, pose, *, speed=None, acceleration=None, stop_event=None):
                 self.current = pose
                 self.moves.append((pose, speed, acceleration))
 
@@ -76,10 +76,10 @@ class BoardMatrixInspectionTests(unittest.TestCase):
 
         self.assertEqual(robot.gripper, [False])
         self.assertEqual([move[0][2] for move in robot.moves], [
-            420.0, 420.0, 420.0,
+            380.0, 380.0, 380.0,
             380.0, 340.0, 300.0, 380.0,
             380.0, 340.0, 300.0, 380.0,
-            420.0,
+            380.0,
         ])
         inspection_moves = [move for move in robot.moves if move[0][2] == 300.0]
         self.assertEqual([move[1] for move in inspection_moves], [5, 5])

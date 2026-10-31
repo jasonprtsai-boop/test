@@ -441,6 +441,8 @@ class GameRecordWriter:
             ("開始時間", _datetime_value(payload.get("started_at"))),
             ("最後更新", _datetime_value(payload.get("saved_at"))),
             ("對局狀態", _phase_label(payload.get("phase"))),
+            ("人工結束原因", {"resign": "認輸", "agreed_draw": "現場協議和棋"}.get((payload.get("game_result") or {}).get("reason"), "—")),
+            ("人工結束勝方", _side_label((payload.get("game_result") or {}).get("winner")) if (payload.get("game_result") or {}).get("winner") else "—"),
             ("目前回合", _actor_label(payload.get("current_turn"))),
             ("先手", _actor_label(payload.get("first_actor"))),
             ("玩家棋色", _side_label(payload.get("player_side"))),

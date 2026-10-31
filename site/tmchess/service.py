@@ -520,6 +520,9 @@ class GameService:
                 )
             )
             snapshot["controls"] = {
+                "can_finish": (not self._busy and not motion_uncertain
+                               and self._board is not None
+                               and phase in (Phase.PLAYER_TURN.value, Phase.ENGINE_READY.value)),
                 # Standard start creates a battle; current-board recovery may
                 # continue this segment or link an explicit new baseline.
                 "can_start": can_initialize_game,
@@ -588,6 +591,10 @@ class GameService:
         snapshot["game"]["record_url"] = "/api/game/record" if game_id else None
         snapshot["game"]["record_ready"] = record_ready
         snapshot["game"]["record_status"] = record_status
+        snapshot["game"]["history_complete"] = self._has_complete_replay_context({
+            "initial_board": self._initial_board, "initial_side_to_move": self._initial_side_to_move,
+            "board": self._board, "side_to_move": self._side_to_move, "move_history": self._move_history,
+        }) and not self._battle_metadata.get("history_gap", False)
         return snapshot
 
     def current_record_path(self) -> Path | None:
@@ -954,6 +961,32 @@ class GameService:
             self._queue.put(("retry", None))
         return self.get_state()
 
+    def submit_finish(self, reason: str, confirmed: bool) -> dict[str, Any]:
+        with self._lock:
+            state = self.get_state()
+            self._require(state["controls"]["can_finish"], "finish_unavailable", "請在回合待命且手臂狀態確認後結束對局。")
+            self._require(confirmed is True and reason in ("resign", "agreed_draw"),
+                          "invalid_result", "請確認認輸或現場協議和棋。")
+            loser = self._side_to_move
+            self._require(reason != "resign" or self._controllers.get(loser) == "human",
+                          "not_human_turn", "只能由目前行棋的玩家認輸。")
+            result = {"reason": reason, "winner": self._other_side(loser) if reason == "resign" else None,
+                      "finished_at": utc_now()}
+            message = (f"{self._side_label(loser)}認輸，{self._side_label(result['winner'])}獲勝。"
+                       if reason == "resign" else "現場確認以協議和棋結束。")
+            self.store.update(lambda s: s.update(phase=Phase.FINISHED.value, current_turn=None,
+                                                game_result=result, message=message, error=None))
+            pending = (self._pending_move, self._pending_expected, self._pending_before)
+            self._pending_move = self._pending_expected = self._pending_before = None
+            try:
+                self._persist_session()
+            except StatePersistenceError as exc:
+                self._pending_move, self._pending_expected, self._pending_before = pending
+                self.store.update(lambda s: s.update(phase=state["phase"], current_turn=state["current_turn"],
+                                                     game_result=state.get("game_result"), message=state["message"]))
+                raise exc
+        return self.get_state()
+
     def submit_stop(self) -> dict[str, Any]:
         with self._lock:
             state = self.get_state()
@@ -1155,6 +1188,7 @@ class GameService:
                 raise StatePersistenceError(f"無法建立對局資料夾：{exc}") from exc
             break
         self._game_id = game_id
+        self.store.update(lambda state: state.update(game_result=None))
         self._battle_metadata = {
             "battle_id": lineage["battle_id"] if lineage else game_id,
             "parent_game_id": previous["game_id"] if previous else None,
@@ -1281,6 +1315,7 @@ class GameService:
             "started_at": self._game_started_at or saved_at,
             "saved_at": saved_at,
             "phase": state["phase"],
+            "game_result": state.get("game_result"),
             "current_turn": state.get("current_turn"),
             "first_actor": state.get("first_actor"),
             "player_side": self._player_side,
