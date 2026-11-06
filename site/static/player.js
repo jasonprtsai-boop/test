@@ -24,6 +24,23 @@
   const drawRate = document.querySelector("#drawRate");
   const blackWin = document.querySelector("#blackWin");
   const analysisLines = document.querySelector("#analysisLines");
+  const engineStrengthStatus = document.querySelector("#engineStrengthStatus");
+  const eloInput = document.querySelector("#engineElo");
+  const eloButton = document.querySelector("#applyElo");
+  let eloInitialized = false;
+  eloButton.addEventListener("click", async () => {
+    if (!eloInput.reportValidity()) return;
+    eloButton.disabled = true;
+    const status = document.querySelector("#eloStatus");
+    try {
+      const result = await TMChess.request("/api/engine/elo", {
+        method: "POST", body: JSON.stringify({target_elo: Number(eloInput.value)})
+      });
+      status.textContent = `已套用目標 ${result.target_elo} Elo；下次搜尋生效。`;
+      engineStrengthStatus.textContent = `AI 棋力限制已啟用：目標 ${result.target_elo} Elo。`;
+    } catch (error) { status.textContent = error.message; }
+    finally { eloButton.disabled = false; }
+  });
   const depthInput = document.querySelector("#engineDepth");
   const depthButton = document.querySelector("#applyDepth");
   let depthInitialized = false;
@@ -119,6 +136,13 @@
   function render(state) {
     state = TMChess.newestState(latestState, state);
     latestState = state;
+    engineStrengthStatus.textContent = state.engine_limit_strength ?
+      `AI 棋力限制已啟用：目標 ${state.engine_target_elo} Elo。` :
+      "AI 棋力限制未啟用。";
+    if (!eloInitialized && Number.isInteger(state.engine_target_elo)) {
+      eloInput.value = state.engine_target_elo;
+      eloInitialized = true;
+    }
     if (!depthInitialized && Number.isInteger(state.engine_depth)) {
       depthInput.value = state.engine_depth;
       depthInitialized = true;
@@ -166,7 +190,7 @@
     currentBoardButton.disabled = pending || !state.controls.can_start_current;
     document.querySelector("#continuationMode").disabled = pending || !state.controls.can_start_current;
     startButton.textContent = state.preflight.ready ? "從標準開局開始" : "系統準備中…";
-    currentBoardButton.textContent = state.preflight.ready ? "偵測目前棋盤" : "系統準備中…";
+    currentBoardButton.textContent = state.preflight.ready ? "辨識並恢復對局" : "系統準備中…";
     const runtimePending = state.preflight.checks.some(check => check.key === "runtime_pending");
     setupMessage.textContent = state.robot?.motion_may_continue ?
       "上次中斷後 Robot 狀態尚未確認。請由現場操作員確認 Robot 已完全停止，再到「系統監控」按「確認 Robot 已停止」。" :
@@ -183,7 +207,7 @@
     resignButton.disabled = pending || !state.controls.can_finish || state.controllers?.[state.side_to_move] !== "human";
     drawButton.disabled = pending || !state.controls.can_finish;
     document.querySelector("#historyStatus").textContent = state.game?.id ?
-      (state.game.history_complete ? "本局棋譜可重播；實體落子依目前快速流程確認。" :
+      (state.game.history_complete ? "本局棋譜可重播；AI 動作完成後提交預期盤面，實體落子未經影像確認。" :
         "棋譜尚不完整或有重新建立基準的缺口；不會自動補造歷史著法。") : "";
     document.querySelectorAll("input[name='gameMode']").forEach(input => {
       input.disabled = pending || !(state.controls.can_start || state.controls.can_start_current);
@@ -266,6 +290,12 @@
     controllers: latestState?.controllers || null,
     side_to_move: latestState?.side_to_move || null,
     message: latestState?.message || null,
+    engine_strength: latestState ? {
+      limit_strength: latestState.engine_limit_strength,
+      target_elo: latestState.engine_target_elo,
+      depth: latestState.engine_depth,
+      movetime_ms: latestState.engine_movetime_ms
+    } : null,
     analysis: latestState?.analysis || null,
     controls: latestState?.controls || null
   });

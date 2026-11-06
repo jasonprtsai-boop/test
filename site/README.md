@@ -12,16 +12,16 @@
 ## 目前完成範圍
 
 - `/`：專題、系統流程、實測成果與入口。
-- `/player`：提供「偵測目前棋盤」與「從頭開始」兩個入口；標準開局支援玩家執紅、玩家執黑、逐步確認的 AI 對 AI，以及雙人分析四種模式。
+- `/player`：提供「辨識並恢復對局」與「從頭開始」兩個入口；標準開局支援玩家執紅、玩家執黑、逐步確認的 AI 對 AI，以及雙人分析四種模式。
 - 人類控制的回合可取得 Pikafish 三條候選路線與紅勝／和棋／黑勝估計；提示只讀取盤面，不會建立 pending move 或命令機械手臂。
-- 「偵測目前棋盤」整合舊續局與目前棋盤入口，預設核對棋譜並恢復同場，也可明確選擇重建基準或開始全新對戰。
+- 「辨識並恢復對局」整合舊續局與目前棋盤入口，預設核對棋譜並恢復同場，也可明確選擇重建基準或開始全新對戰。
 - `/monitor`：雙視角影像、六軸 Pose、動作、例行檢查、Base／TCP 與異常停機人工確認。例行檢查顯示本次 Base／TCP 確認、影像服務、引擎、機械連線及磁碟空間；其他已通過項目收進「其他檢查項目」，未通過項目全部展開，底層安全檢查仍完整執行。
 - 新對戰可自訂名稱，Excel 自動附日期、時間與識別碼；玩家頁及監控台顯示實際儲存位置與更新狀態，監控台可下載。同場紀錄保存於 `site/對局紀錄/整場對戰/`。
 - 系統執行紀錄固定保存於 `site/系統紀錄/system.log`，單檔 10 MiB、保留 5 份輪替檔，方便定位拍攝、引擎、Robot 與匯出錯誤。
   Robot 診斷會記錄 `[ROBOT_DIAG]`：命令編號與內容、送出嘗試／成功送出／控制器回覆、回覆片段、位置回讀、到位確認，以及錯誤類型、系統錯誤碼、最後位置與其經過時間。吸盤命令另記錄開關、DO 裝置／腳位及是否為異常後的關閉嘗試；`last_gripper_command_ack` 僅為歷史命令回覆，不是目前實體輸出或真空感測值。記錄包含程序與執行緒識別，沿用上述輪替上限。現場異常後請立即複製 `system.log` 與輪替檔，並記下 TMflow 掉回登入頁的時間，以免長時間運作覆蓋證據。
   2026-10-29 診斷決策：既有 2026-10-28 17:32:10 紀錄顯示移動命令等待回覆時先發生 `ConnectionResetError / WinError 10054`，後續吸盤關閉命令也因同一連線失效而失敗。因此介面先呈現原始錯誤，再說明吸盤狀態未確認；保留原本停止與人工確認規則，不新增動作重送。此證據未能判定斷線由 TMflow、網路或控制器何者造成，也沒有量測重量、真空或遠端介面登入狀態。
 - `127.0.0.1:8000`：UI、遊戲 API 與 SSE。
-- `0.0.0.0:5000/api/vision/tmvision/detect`：只接受設定 Robot IP 的 JPEG multipart upload。
+- `0.0.0.0:5000/api/vision/tmvision/detect/v1` 與 `/v2`：只接受設定 Robot IP 的 JPEG multipart upload，視角必須明確標記。
 - 單一 `GameService` 與單一背景工作佇列。
 
 真機動作開關預設開啟，啟動後會進入真機動態預檢；可設定環境變數 `TMCHESS_HARDWARE_ENABLED=0` 關閉。新姿態平移後的 90 點矩陣已於 2026-10-13 完成真機巡檢並簽核。操作員仍須在 TMflow 畫面核對 `RobotBase / NOTOOL`，再於 `/monitor` 按確認。網站停止會阻止尚未送出的後續命令，但不能撤回控制器已接受的低階運動，也不能取代實體 Emergency Stop。
@@ -32,7 +32,7 @@
 
 ## 對局保存與續局
 
-瀏覽器關閉或網頁連線中斷、但後端仍在執行時，重新開啟 `/player` 會取得同一份即時狀態，不需要重新開始。後端重啟或辨識失敗後，使用「偵測目前棋盤」，並選擇「目前棋盤的用途」：
+瀏覽器關閉或網頁連線中斷、但後端仍在執行時，重新開啟 `/player` 會取得同一份即時狀態，不需要重新開始。後端重啟或辨識失敗後，使用「辨識並恢復對局」，並選擇「目前棋盤的用途」：
 
 | 用途 | 行為 | 紀錄方式 |
 | --- | --- | --- |
@@ -48,7 +48,7 @@ schema 3 缺少明確的 `motion_state_uncertain` 布林值會視為快照損壞
 
 若程式在 AI 落子途中中斷，續局不會直接重播機械動作：已完成的著法會在拍照確認後提交；尚未完成的著法會停在可重試狀態；盤面同時不符合落子前與預期盤面時則停止並要求人工檢查。
 
-若後端仍在執行、但 YOLO 或 Pikafish 等非運動步驟失敗，玩家頁可使用「偵測目前棋盤」恢復同場，不必重啟網站。拍照路徑與 AI 棋步送出前都會先把「可能仍在動作」寫入 `game.json`；完成 Listen／Pose 穩定確認後才清除。若程序中斷、Robot 連線失敗或吸盤關閉命令無法確認，單純重啟不會解除鎖定。現場操作員必須先確認 Robot 已完全停止，再於 `/monitor` 明確解除；若有危險，仍須先使用實體 Emergency Stop。
+若後端仍在執行、但 YOLO 或 Pikafish 等非運動步驟失敗，玩家頁可使用「辨識並恢復對局」恢復同場，不必重啟網站。拍照路徑與 AI 棋步送出前都會先把「可能仍在動作」寫入 `game.json`；完成 Listen／Pose 穩定確認後才清除。若程序中斷、Robot 連線失敗或吸盤關閉命令無法確認，單純重啟不會解除鎖定。現場操作員必須先確認 Robot 已完全停止，再於 `/monitor` 明確解除；若有危險，仍須先使用實體 Emergency Stop。
 
 吸盤沒有真空或有無棋感測器，DO 回覆只代表控制器接受輸出命令。AI 落子後不再拍照比對，動作成功返回即按預期盤面提交棋步；若實際取放失敗，請停止流程，再從現場盤面重建基準。中斷後保留的 pending move 仍須先辨識現場盤面，才可恢復或重試，避免重播已完成棋步。
 
@@ -122,11 +122,13 @@ $env:TMCHESS_HARDWARE_ENABLED = "1"  # 只在有人值守且完成現場安全�
 .\.venv\Scripts\python.exe app.py
 ```
 
-未設定環境變數時，真機動作開關預設開啟；設定為 `0` 時，網站可啟動與檢視，但真機預檢不會通過。瀏覽器開啟 `http://127.0.0.1:8000`，先到 `/monitor` 核對並確認 Base／TCP，再操作玩家頁。TMflow 的 External Image Processing URL 使用本機區網 IP 與 port `5000`，路徑固定為 `/api/vision/tmvision/detect`；不要填 `127.0.0.1`。
+未設定環境變數時，真機動作開關預設開啟；設定為 `0` 時，網站可啟動與檢視，但真機預檢不會通過。瀏覽器開啟 `http://127.0.0.1:8000`，先到 `/monitor` 核對並確認 Base／TCP，再操作玩家頁。TMflow 的兩個 External Image Processing 節點使用本機區網 IP 與 port `5000`，V1 固定填 `/api/vision/tmvision/detect/v1`，V2 固定填 `/api/vision/tmvision/detect/v2`；不要填 `127.0.0.1`，也不要讓兩個節點共用未標記的 `/detect` 路徑。
 
 ## Pikafish 連接
 
 產品程式使用真正的 `PikafishEngine`，不是測試替身。資料流為：
+
+AI 棋力限制預設啟用，目標設為 Pikafish UCI Elo 1600。玩家可在進階 AI 設定中將目標調整為內附引擎支援的 1280–3133，下一次搜尋生效，重新啟動後恢復預設。`depth` 與 `movetime` 仍是搜尋資源上限，不代表玩家難度；目前玩家頁會顯示實際限強狀態。限強後 `bestmove` 可能刻意不是分析分數最高的第一條 PV，但仍須通過既有合法性檢查才允許 Robot 動作。
 
 ```text
 雙視角 YOLO 盤面
@@ -135,8 +137,8 @@ $env:TMCHESS_HARDWARE_ENABLED = "1"  # 只在有人值守且完成現場安全�
 → UCI position / go
 → bestmove
 → pending move
-→ 機械手臂移動及拍照驗證
-→ 驗證成功後才提交盤面
+→ 機械手臂移動及到位確認
+→ 動作完成後提交預期盤面（不追加拍照，實體取放未驗證）
 ```
 
 所需檔案位於 `..\engine_bin\`：`pikafish.exe`、`pikafish.nnue`、引擎與權重授權文件。GUI、開局庫、原始碼與其他 CPU 版本不會被網站載入。
@@ -181,18 +183,21 @@ $env:TMCHESS_HARDWARE_ENABLED = "1"  # 只在有人值守且完成現場安全�
 
 設定是啟動時讀取；修改後必須重新啟動。預檢通過前，開始 API 固定回傳 `409`。
 
-網站與 `tools/verify_board_matrix.py` 共用 `runtime/tm5-hardware.lock`，避免兩個新程式同時控制 TM5-700。根目錄舊實驗程式不使用此鎖，網站運行時仍不得另外啟動 `full_test.py`、`cycle_test.py` 或其他直接連線工具。
+網站、`tools/verify_board_matrix.py` 與根目錄 `full_test.py` 共用 `runtime/tm5-hardware.lock`，避免兩個程序同時控制 TM5-700。新增任何直接連線真機的工具時也必須先取得同一個 `HardwareLease`；未納入共用鎖的外部程式仍不得與網站同時執行。
+
+核心責任分界：`GameService` 是唯一即時棋局狀態、工作流與硬體命令佇列；`WorkflowJournal` 只保存並組裝 move／capture／motion／engine／event 稽核歷史，不決定盤面或送出命令；`GameSessionStore` 負責原子 JSON 快照，`GameRecordWriter` 只產生衍生 Excel。
 
 ## 測試
 
 ```powershell
+.\.venv\Scripts\python.exe tools\verify_release_assets.py
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 node --test tests/frontend_resilience.test.cjs
 ```
 
 Fake adapters 只存在 `tests/`，產品程式不提供模擬模式。自動測試不等於 TM5-700 實機驗證。
 
-提交版本前至少執行完整測試、Python 編譯檢查及套件相依性檢查；實驗輸出與執行期影像不應提交到 Git，`best.pt` 則是可重現部署所需的版本化資產。
+提交版本前至少執行發布資產雜湊、完整測試、Python 編譯檢查及套件相依性檢查；實驗輸出與執行期影像不應提交到 Git。每局紀錄會保存程式 commit、tracked dirty 狀態、Python／lock／YOLO／Pikafish／NNUE 指紋。`release_manifest.json` 標示的公開發布阻擋事項未清除前，只能稱為內部可重現部署，不能宣稱已具備公開散布條件。
 
 ### 9×10 棋盤點位真機巡檢
 
@@ -205,14 +210,14 @@ Fake adapters 只存在 `tests/`，產品程式不提供模擬模式。自動測
 建議先測第一點並逐點確認。棋盤可保留正常平放的單層棋子，但不可有堆疊、翹起的棋子或其他異物：
 
 ```powershell
-.\.venv\Scripts\python.exe tools\verify_board_matrix.py --execute --start-point 1 --end-point 1 --step-confirm --allow-below-configured-safe-z
+.\.venv\Scripts\python.exe tools\verify_board_matrix.py --execute --start-point 1 --end-point 1 --step-confirm
 ```
 
 第一點確認後，再把 `--end-point 1` 改為 `--end-point 90`。流程為安全高度進場、在 Z=380 跨點、Z=340 接近、低速下降至 Z=300、停留三秒、回升至 Z=380。結果逐點寫入 `runtime/calibration/*.csv`，包含目標／實際 Pose 與 XYZ 誤差。
 
 棋盤表面為 Z=280、棋子厚度為 10.3 mm，因此棋子頂面約為 Z=290.3；巡檢最低點 Z=300 的名義間隙約為 9.7 mm，扣除目前 2 mm 高度容差後仍約為 7.7 mm。此判斷只適用於正常平放的單層棋子。
 
-注意：Z=380 低於正式 `Z_SAFE=525`，因此真機模式必須明確加入 `--allow-below-configured-safe-z`。這只表示操作員接受該次巡檢路徑，不會修改正式對局的 `Z_SAFE`。
+目前正式對局與巡檢跨點高度皆為 `Z_SAFE=380`，因此不需要 `--allow-below-configured-safe-z`。該參數只為舊版命令相容而保留；未來若巡檢跨點高度低於當時設定的 `Z_SAFE`，工具才會要求操作員明確加入。
 
 `Ctrl+C` 只會停止送出後續點位，不能保證立即停止已經送給控制器的當前運動；需要立即停機時必須使用實體 Emergency Stop。
 
@@ -224,7 +229,7 @@ Listen Server 仍由既有 TMflow Listen 節點啟用；網站只送出現有實
 
 TMvision 上傳成功後，receiver 會回傳 TMflow 可解析的 `message/image_w/image_h/annotations` detection JSON，讓流程由 V1 前往 V2；`capture_ok` 只代表影像已安全接收，不代表 YOLO 盤面辨識成功。V1 與 V2 各自等待最多 30 秒，兩張都到齊後才執行真正的 YOLO 融合。
 
-V1／V2 依 TMflow 圖中的上傳順序識別：第一個 External Image Processing 節點為 V1，收到成功回覆後才會執行第二個節點並上傳 V2。現場兩個節點目前都輸出 `2592×1944`，因此不能用解析度區分視角；V1 的既有 `2048×1536` 校正座標會依實際影像尺寸等比例換算。每次 capture 只接受兩張影像，未啟動拍攝或第三張以上仍會被拒絕。YOLO 載入時也會核對模型類別集合與程式盤面定義，類別缺少或多出時不會進入對局。
+V1／V2 必須由 TMflow 節點明確上傳到 `/api/vision/tmvision/detect/v1` 與 `/api/vision/tmvision/detect/v2`（亦可用 `view=v1|v2` form/query 欄位）。現場兩個節點都輸出 `2592×1944`，因此不再以抵達順序推定身分；缺少或重複視角會 fail closed。V1 的既有 `2048×1536` 校正座標會依實際影像尺寸等比例換算。每次 capture 只接受各一張 V1/V2，未啟動拍攝或第三張以上仍會被拒絕。YOLO 載入時也會核對模型類別集合與程式盤面定義，類別缺少或多出時不會進入對局。
 
 YOLO 模型常駐於獨立程序，模型載入與每次推論的牆鐘上限預設都是 60 秒。超時、停止或程式關閉會終止該程序，避免原生 ML runtime 卡住整個工作流程；下一次合法拍攝會重新建立乾淨的推論程序。
 
@@ -233,7 +238,7 @@ YOLO 正常盤面使用 `0.25` 信心門檻。若融合結果違反象棋棋子�
 
 ### 2026-10-21：現場棋盤模式
 
-「從頭開始」與「偵測目前棋盤」共用人對機（玩家固定紅方）、AI 對 AI、雙人分析三種模式。新現場對戰或重建基準可指定紅方／黑方回合；AI 對 AI 每步仍需確認，雙人分析由人類走雙方。恢復完整棋譜時沿用保存的模式與回合，包含舊版玩家執黑的對戰；不會因畫面選項覆寫歷史。選人對機黑方回合時，辨識後會進入 AI 自動落子流程。
+「從頭開始」與「辨識並恢復對局」共用人對機（玩家固定紅方）、AI 對 AI、雙人分析三種模式。新現場對戰或重建基準可指定紅方／黑方回合；AI 對 AI 每步仍需確認，雙人分析由人類走雙方。恢復完整棋譜時沿用保存的模式與回合，包含舊版玩家執黑的對戰；不會因畫面選項覆寫歷史。選人對機黑方回合時，辨識後會進入 AI 自動落子流程。
 
 
 ### 落子後直接提交（2026-10-22）
@@ -245,3 +250,7 @@ YOLO 正常盤面使用 `0.25` 信心門檻。若融合結果違反象棋棋子�
 ## 人工結束與棋譜完整度
 玩家頁在回合待命時提供「認輸」與「現場判和」，需確認後才結束並保存。認輸限目前行棋的玩家；現場判和是操作員確認，並非引擎自動判定。移動中、忙碌或手臂狀態未知時不能藉此跳過停止確認。
 棋譜完整度會顯示於紀錄位置下方；缺初始盤面或重建基準的缺口不會自動補造。AI正常落子仍採快速流程，不增加每步拍照。
+
+## 展示驗收與效能分析
+
+目前版本驗收、實驗指標、書面呈現規格、時程與人工封存流程統一見 [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md)。耗時分析使用唯讀工具 `tools/summarize_performance.py`；缺失資料不當成零，歷史數字不代表目前版本。

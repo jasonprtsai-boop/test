@@ -88,6 +88,24 @@ class BattleContinuityTests(unittest.TestCase):
         self.assertEqual(state["game_mode"], "analysis")
         self.assertEqual(state["side_to_move"], "b")
 
+    def test_analysis_recovery_commits_one_unsubmitted_human_move(self):
+        self.create([])
+        self.service.submit_start_mode("analysis")
+        wait_for(self.service, Phase.PLAYER_TURN.value)
+        self.service.close()
+        self.service = None
+
+        robot, _, engine = self.create([self.after_red])
+        self.service.submit_start_current("red", "player", mode="analysis")
+        state = wait_for(self.service, Phase.PLAYER_TURN.value)
+
+        self.assertEqual(state["game_mode"], "analysis")
+        self.assertEqual(state["side_to_move"], "b")
+        self.assertEqual([move["uci"] for move in self.saved()["move_history"]], ["a3a4"])
+        self.assertEqual(engine.legal_calls, 1)
+        self.assertEqual(engine.suggest_calls, 0)
+        self.assertEqual(robot.moves, [])
+
     def test_custom_record_name_survives_rebaseline_and_restart(self):
         writer = GameRecordWriter(Path(self.tmp.name) / 'records', games_root=self.sessions.root)
         self.create([TimeoutError('bad image'), self.after_red], record_writer=writer)

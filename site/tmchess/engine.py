@@ -107,31 +107,61 @@ class PikafishEngine:
         if not self.config.nnue.is_file() or self.config.nnue.stat().st_size == 0:
             raise FileNotFoundError(f"找不到 Pikafish NNUE：{self.config.nnue}")
 
-    def start(self) -> None:
-        if self.process is not None and self.process.poll() is None:
-            return
-        self.stop()
-        self.check_files()
-        self._lines = queue.Queue()
-        self.process = subprocess.Popen(
-            [str(self.config.executable)], cwd=str(self.config.executable.parent),
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", bufsize=1,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    def _configuration_commands(self) -> tuple[str, ...]:
+        net = (
+            self.config.nnue.name
+            if self.config.nnue.parent == self.config.executable.parent
+            else str(self.config.nnue)
         )
-        assert self.process.stdout is not None
-        self._reader = threading.Thread(target=self._read_output, args=(self.process.stdout,), daemon=True)
-        self._reader.start()
-        try:
-            self._send("uci")
-            self._wait_for("uciok")
-            net = self.config.nnue.name if self.config.nnue.parent == self.config.executable.parent else str(self.config.nnue)
-            self._send(f"setoption name EvalFile value {net}")
-            self._send("isready")
-            self._wait_for("readyok")
-        except Exception:
+        enabled = "true" if self.config.limit_strength else "false"
+        return (
+            f"setoption name EvalFile value {net}",
+            f"setoption name UCI_LimitStrength value {enabled}",
+            f"setoption name UCI_Elo value {self.config.target_elo}",
+        )
+
+    def update_config(self, config: EngineConfig) -> None:
+        """Apply settings for future searches without interrupting a search.
+
+        Search limits are read for every ``go`` command. Strength options are
+        configured only during UCI startup, so changing either one retires the
+        idle process and lets the next search start it with the new values.
+        """
+        with self._search_lock:
+            strength_changed = (
+                config.limit_strength != self.config.limit_strength
+                or config.target_elo != self.config.target_elo
+            )
+            self.config = config
+            if strength_changed:
+                self.stop()
+
+    def start(self) -> None:
+        with self._search_lock:
+            if self.process is not None and self.process.poll() is None:
+                return
             self.stop()
-            raise
+            self.check_files()
+            self._lines = queue.Queue()
+            self.process = subprocess.Popen(
+                [str(self.config.executable)], cwd=str(self.config.executable.parent),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", bufsize=1,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            assert self.process.stdout is not None
+            self._reader = threading.Thread(target=self._read_output, args=(self.process.stdout,), daemon=True)
+            self._reader.start()
+            try:
+                self._send("uci")
+                self._wait_for("uciok")
+                for command in self._configuration_commands():
+                    self._send(command)
+                self._send("isready")
+                self._wait_for("readyok")
+            except Exception:
+                self.stop()
+                raise
 
     def _read_output(self, stream) -> None:
         try:

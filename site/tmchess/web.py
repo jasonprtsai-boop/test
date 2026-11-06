@@ -14,9 +14,10 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 from .config import CONFIG, SITE_ROOT, AppConfig
 from .engine import PikafishEngine
+from .errors import CommandConflict, StatePersistenceError
 from .records import GameRecordWriter
 from .robot import TMRobotAdapter
-from .service import CommandConflict, GameService, StatePersistenceError
+from .service import GameService
 from .session import GameSessionStore
 from .vision import CAPTURE_ID_PATTERN, DualViewInbox, DualViewProcessor, VisionAdapter
 
@@ -26,10 +27,8 @@ def build_runtime(config: AppConfig = CONFIG, *, start_preflight_monitor: bool =
         config.capture_root,
         config.network.robot_ip,
         config.network.max_upload_bytes,
-        # TMflow executes the two External Image Processing nodes serially and
-        # waits for the first HTTP response before sending the second frame.
-        # The deployed cell currently uploads both views at 2592x1944, so view
-        # identity must follow that guaranteed graph order instead of image size.
+        # Both deployed views are 2592x1944. Identity is supplied explicitly by
+        # the /v1 and /v2 routes (or the equivalent view field), never arrival order.
     )
     processor = DualViewProcessor(config.vision)
     vision = VisionAdapter(inbox, processor, config.vision.image_timeout_seconds)
@@ -97,6 +96,14 @@ def create_ui_app(
                     "message": "控制命令必須來自本機網站。",
                 }
             }), 403
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({
+                "error": {
+                    "code": "invalid_json",
+                    "message": "控制命令必須是格式正確的 JSON object。",
+                }
+            }), 400
         return None
 
     @app.after_request
@@ -141,6 +148,16 @@ def create_ui_app(
             return jsonify(service.set_engine_movetime(body.get("movetime_ms") if isinstance(body, dict) else None))
         except ValueError as exc:
             return jsonify({"error": {"code": "invalid_movetime", "message": str(exc)}}), 400
+
+    @app.post("/api/engine/elo")
+    def engine_elo():
+        body = request.get_json(silent=True)
+        try:
+            return jsonify(service.set_engine_target_elo(
+                body.get("target_elo") if isinstance(body, dict) else None
+            ))
+        except ValueError as exc:
+            return jsonify({"error": {"code": "invalid_elo", "message": str(exc)}}), 400
 
     @app.post("/api/game/reset-page")
     def reset_page():
@@ -319,17 +336,32 @@ def create_vision_app(inbox: DualViewInbox, config: AppConfig = CONFIG) -> Flask
     app = Flask("tmchess-vision")
     app.config["MAX_CONTENT_LENGTH"] = config.network.max_upload_bytes
 
+    @app.after_request
+    def log_receiver_error(response):
+        if response.status_code >= 400 and (request.method == "POST" or request.remote_addr == config.network.robot_ip):
+            payload = response.get_json(silent=True) or {}
+            app.logger.warning(
+                "[VISION] request rejected source=%r method=%s path=%r status=%d reason=%r",
+                request.remote_addr, request.method, request.path, response.status_code,
+                payload.get("error", response.status),
+            )
+        return response
+
     @app.post(config.network.vision_path)
-    def receive_image():
+    @app.post(f"{config.network.vision_path}/<view>")
+    def receive_image(view: str | None = None):
         if request.remote_addr != config.network.robot_ip:
             return jsonify({"error": "source_ip_not_allowed"}), 403
-        uploaded = request.files.get("file") or request.files.get("image")
+        uploaded = request.files.get("file")
+        if uploaded is None:
+            uploaded = request.files.get("image")
         if uploaded is None:
             return jsonify({"error": "jpeg_multipart_required"}), 400
         data = uploaded.stream.read(config.network.max_upload_bytes + 1)
+        explicit_view = view or request.form.get("view") or request.args.get("view")
         try:
             _capture_id, _view, (image_w, image_h) = inbox.accept(
-                request.remote_addr, uploaded.mimetype or "", data
+                request.remote_addr, uploaded.mimetype or "", data, explicit_view
             )
         except PermissionError as exc:
             return jsonify({"error": str(exc)}), 403
@@ -343,6 +375,7 @@ def create_vision_app(inbox: DualViewInbox, config: AppConfig = CONFIG) -> Flask
         # exists only to let the TMflow graph continue to the next viewpoint.
         return jsonify({
             "message": "success",
+            "view": _view,
             "image_w": image_w,
             "image_h": image_h,
             "annotations": [{

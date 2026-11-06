@@ -40,6 +40,7 @@ class WebTests(unittest.TestCase):
         for endpoint, field, value in (
             ("/api/engine/depth", "depth", 1),
             ("/api/engine/movetime", "movetime_ms", 100),
+            ("/api/engine/elo", "target_elo", 1280),
         ):
             original = getattr(self.service.config.engine, field)
             for origin in (None, "http://attacker.example", "null", "http://localhost:1"):
@@ -54,9 +55,27 @@ class WebTests(unittest.TestCase):
             self.assertEqual(response.status_code, 415)
             self.assertEqual(getattr(self.service.config.engine, field), original)
 
+    def test_no_parameter_command_rejects_malformed_or_non_object_json(self):
+        for payload in ('{"broken"', 'null', '[]'):
+            with self.subTest(payload=payload):
+                response = self.client.post(
+                    "/api/game/stop",
+                    data=payload,
+                    content_type="application/json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.get_json()["error"]["code"], "invalid_json")
+                self.assertEqual(self.service.get_state()["phase"], Phase.IDLE.value)
+
     def test_engine_limits_update_and_validate(self):
-        for field, low, high in (("depth", 1, 30), ("movetime_ms", 100, 10000)):
-            endpoint = "/api/engine/" + ("depth" if field == "depth" else "movetime")
+        state = self.service.get_state()
+        self.assertTrue(state["engine_limit_strength"])
+        self.assertEqual(state["engine_target_elo"], 1600)
+        for endpoint, field, low, high in (
+            ("/api/engine/depth", "depth", 1, 30),
+            ("/api/engine/movetime", "movetime_ms", 100, 10000),
+            ("/api/engine/elo", "target_elo", 1280, 3133),
+        ):
             for value in (low, high):
                 response = self.client.post(endpoint, json={field: value})
                 self.assertEqual(response.status_code, 200)
@@ -68,6 +87,7 @@ class WebTests(unittest.TestCase):
                 self.assertEqual(getattr(self.service.engine.config, field), high)
         self.assertEqual(self.service.engine.config.depth, 30)
         self.assertEqual(self.service.engine.config.movetime_ms, 10000)
+        self.assertEqual(self.service.engine.config.target_elo, 3133)
 
     def test_page_reset_clears_stopped_verification_error(self):
         self.service.store.update(lambda state: state.update(
@@ -161,8 +181,11 @@ class WebTests(unittest.TestCase):
         self.assertIn('id="hintButton"', player)
         self.assertIn('id="executeEngineButton"', player)
         self.assertIn('id="analysisPanel"', player)
+        self.assertIn('id="engineStrengthStatus"', player)
+        self.assertIn('id="engineElo"', player)
+        self.assertIn('id="applyElo"', player)
         self.assertIn('name="gameMode"', player)
-        self.assertIn("偵測目前棋盤", player)
+        self.assertIn("辨識並恢復對局", player)
         self.assertIn("從頭開始", player)
         self.assertIn('id="preflightList"', monitor)
         self.assertIn('id="preflightStatus"', monitor)
@@ -384,23 +407,32 @@ class VisionReceiverTests(unittest.TestCase):
         Image.new("RGB", (width, height), "white").save(output, format="JPEG")
         return output.getvalue()
 
-    def upload(self, data=None, mimetype="image/jpeg", ip="127.0.0.1"):
+    def upload(self, data=None, mimetype="image/jpeg", ip="127.0.0.1", view="v1"):
         if data is None:
             data = self.jpeg()
+        path = self.config.network.vision_path
+        if view:
+            path = f"{path}/{view}"
         return self.client.post(
-            self.config.network.vision_path,
+            path,
             data={"file": (io.BytesIO(data), "frame.jpg", mimetype)},
             content_type="multipart/form-data",
             environ_base={"REMOTE_ADDR": ip},
         )
 
     def test_accepts_exactly_two_jpegs(self):
-        first = self.upload().get_json()
+        first = self.upload(view="v1").get_json()
         self.assertEqual(first["message"], "success")
+        self.assertEqual(first["view"], "v1")
         self.assertEqual((first["image_w"], first["image_h"]), (16, 12))
         self.assertEqual(first["annotations"][0]["label"], "capture_ok")
-        self.assertEqual(self.upload().get_json()["message"], "success")
-        self.assertEqual(self.upload().status_code, 409)
+        self.assertEqual(self.upload(view="v2").get_json()["message"], "success")
+        self.assertEqual(self.upload(view="v2").status_code, 409)
+
+    def test_rejects_upload_without_view_identity(self):
+        response = self.upload(view=None)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("明確指定 v1 或 v2", response.get_json()["error"])
 
     def test_rejects_wrong_source_ip(self):
         self.assertEqual(self.upload(ip="192.168.1.44").status_code, 403)

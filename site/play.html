@@ -1,0 +1,25 @@
+<!doctype html><html lang="zh-Hant"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>象棋對弈</title>
+<style>*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#f3ecdd;color:#362a20;display:grid;place-items:center;font-family:system-ui}main{width:min(94vw,550px);padding:20px 0}header{display:flex;align-items:center;justify-content:space-between}h1{font: bold 2rem serif;margin:0}button{cursor:pointer}header button,#retry{background:#fff8eb;border:1px solid #a88d6b;border-radius:6px;padding:8px 13px}#board{display:grid;grid-template-columns:repeat(9,1fr);background:#d8ae70;padding:2%;border:3px solid #755532;border-radius:5px}.cell{position:relative;aspect-ratio:1;border:none;background:linear-gradient(90deg,transparent 49%,#8a633b 50%,transparent 52%),linear-gradient(transparent 49%,#8a633b 50%,transparent 52%);display:grid;place-items:center;padding:0}.piece{width:88%;height:88%;border:2px solid currentColor;border-radius:50%;background:#fff0c9;display:grid;place-items:center;font:bold clamp(17px,5.5vw,32px) serif;color:#26291e}.red{color:#a02f23}.selected{background:#ffcc61}.target:after{content:'';position:absolute;width:22%;height:22%;border-radius:50%;background:#146846;box-shadow:0 0 0 2px white}.river{grid-column:span 9;text-align:center;letter-spacing:.5em;font:bold 1rem serif;padding:4px}p{min-height:1.5em}</style>
+<main><header><h1>象棋對弈</h1><button id="reset">重新開局</button></header><p id="status" aria-live="polite"></p><div id="board"></div><button hidden id="retry">重試</button></main>
+<script>
+const board=document.querySelector('#board'),msg=document.querySelector('#status');
+let moves=[],legal=[],selected='',busy=false,version=0;
+function pieces(){
+ const p={};['俥傌相仕帥仕相傌俥','車馬象士將士象馬車'].forEach((row,i)=>[...row].forEach((v,x)=>p['abcdefghi'[x]+(i?9:0)]=v));
+ for(const x of 'acegi'){p[x+3]='兵';p[x+6]='卒'}for(const x of 'bh'){p[x+2]='炮';p[x+7]='砲'}
+ for(const m of moves){p[m.slice(2)]=p[m.slice(0,2)];delete p[m.slice(0,2)]}return p;
+}
+function draw(){
+ board.replaceChildren();const p=pieces();
+ for(let y=9;y>=0;y--){if(y===4){const r=document.createElement('div');r.className='river';r.textContent='楚河　漢界';board.append(r)}
+ for(const x of 'abcdefghi'){const id=x+y,b=document.createElement('button');b.className='cell';b.setAttribute('aria-label',id+' '+(p[id]||'空位'));
+ if(p[id]){const s=document.createElement('span');s.className='piece'+('俥傌相仕帥兵炮'.includes(p[id])?' red':'');s.textContent=p[id];b.append(s)}
+ if(selected===id)b.classList.add('selected');if(selected&&legal.includes(selected+id))b.classList.add('target');
+ b.onclick=()=>{if(busy)return;if(selected&&legal.includes(selected+id)){moves.push(selected+id);turn()}else{selected=selected!==id&&legal.some(m=>m.startsWith(id))?id:'';draw()}};board.append(b)}}
+}
+async function turn(){const v=++version;selected='';busy=true;legal=[];retry.hidden=true;msg.textContent=moves.length?'黑方思考中…':'準備棋盤中…';draw();
+ try{const r=await fetch('/turn?moves='+moves.join(','));if(!r.ok)throw Error();const data=await r.json();if(v!==version)return;
+ if(data.reply)moves.push(data.reply);legal=data.legal;busy=false;msg.textContent=legal.length?'你執紅先行。點選紅棋，再點綠點走棋。':(moves.length%2?'紅方勝':'黑方勝');draw()}
+ catch{if(v!==version)return;msg.textContent='無法取得引擎回應，請重試。';retry.hidden=false}}
+reset.onclick=()=>{moves=[];turn()};retry.onclick=turn;window.render_game_to_text=()=>JSON.stringify({moves,selected,busy,legal});turn();
+</script></html>

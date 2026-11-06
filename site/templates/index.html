@@ -6,7 +6,7 @@
   <div class="hero-grid">
     <div>
       <h1>讓機械手臂<br><span>看懂棋局，也完成落子。</span></h1>
-      <p class="lead">本專題整合 TM5-700、雙視角相機、YOLO 棋子辨識與 Pikafish，建立從玩家走子到 AI 真機落子的完整閉環。</p>
+      <p class="lead">本專題整合 TM5-700、雙視角相機、YOLO 棋子辨識與 Pikafish，建立從玩家走子到 AI 真機落子的整合流程。</p>
       <div class="hero-actions">
         <a class="button primary" href="/player">進入玩家介面</a>
         <a class="button secondary" href="/monitor">查看即時監控</a>
@@ -17,7 +17,7 @@
       <h2>先驗證，再動作</h2>
       <p>玩家執紅時，完成第一步後才啟動辨識；引擎執紅時先確認初始盤面。AI 對 AI 的每一步都必須由操作員確認後才執行。</p>
       <div class="rule"></div>
-      <p class="small">真機預設鎖定。網站停止不是實體急停。</p>
+      <p class="small">啟動後須完成操作員核對與預檢才能動作。網站停止不是實體急停。</p>
     </aside>
   </div>
 </section>
@@ -29,7 +29,7 @@
     <li><b>02</b><div><strong>雙視角辨識</strong><span>V1 與 V2 經 YOLO 辨識後融合為單一盤面。</span></div></li>
     <li><b>03</b><div><strong>Pikafish 決策</strong><span>驗證玩家著法並計算 AI 下一步。</span></div></li>
     <li><b>04</b><div><strong>TM5-700 落子</strong><span>工作佇列依序處理吃子、取放與 Pose 回授。</span></div></li>
-    <li><b>05</b><div><strong>拍照驗證</strong><span>結果符合預期後，才正式更新盤面。</span></div></li>
+    <li><b>05</b><div><strong>更新預期盤面</strong><span>動作完成後提交棋步；快速模式不追加拍照，實體取放結果未經影像確認。</span></div></li>
   </ol>
 </section>
 
@@ -41,7 +41,7 @@
       <article><strong>89<small>/100</small></strong><h3>雙視角＋YOLO 整合完成</h3><p>11 輪因連線重設或逾時中斷</p></article>
       <article><strong>0.248<small>秒</small></strong><h3>成功輪 YOLO 平均時間</h3><p>此數值是處理時間，不是辨識準確率</p></article>
     </div>
-    <p class="method-note">現有測試沒有 ground truth，且成功輪最終棋子數並非固定 32 枚，因此 89/100 不作為辨識準確率。</p>
+    <p class="method-note">以上為歷史測試，不代表目前版本或整局成功率；測試版本與日期須由原始紀錄核對。現有測試沒有 ground truth，且成功輪最終棋子數並非固定 32 枚，因此 89/100 不作為辨識準確率。</p>
   </div>
 </section>
 

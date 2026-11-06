@@ -1,8 +1,9 @@
-from ultralytics import YOLO
+from PIL.Image import open as open_image
 
 from flask import Flask, request, jsonify
 from werkzeug.serving import make_server
 
+from io import BytesIO
 from PIL import Image
 
 from openpyxl import Workbook
@@ -11,6 +12,7 @@ from openpyxl.utils import get_column_letter
 
 from pathlib import Path
 
+import sys
 import socket
 import struct
 import threading
@@ -19,6 +21,15 @@ import math
 import json
 
 from datetime import datetime
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+SITE_ROOT = PROJECT_ROOT / "site"
+if str(SITE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SITE_ROOT))
+
+from tmchess.hardware_lease import HardwareLease
+from tmchess.robot_protocol import decode_frames, encode_frame
 
 
 # ============================================================
@@ -568,85 +579,36 @@ def make_tmsct_packet(
     script_id,
     script
 ):
-
-    # --------------------------------------------------------
-    # Length只計：
-    #
-    # ScriptID,Script
-    # --------------------------------------------------------
-
-    payload = (
-
-        f"{script_id},"
-
-        f"{script}"
-
-    ).encode(
-        "utf-8"
-    )
+    payload = f"{script_id},{script}".encode("utf-8")
+    return encode_frame("TMSCT", payload)
 
 
-    body = (
-
-        b"TMSCT,"
-
-        +
-
-        str(
-            len(payload)
-        ).encode(
-            "ascii"
-        )
-
-        +
-
-        b","
-
-        +
-
-        payload
-
-        +
-
-        b","
-
-    )
+def raise_controller_error(frame, script):
+    if frame.header == "CPERR":
+        raise RuntimeError(f"Robot CPERR（{script}）：{frame.raw!r}")
 
 
-    checksum = 0
+def acknowledges(frame, script_id, script):
+    if frame.header != "TMSCT":
+        return False
+    response_id, separator, status = frame.payload.partition(b",")
+    if not separator or response_id != script_id.encode("ascii"):
+        return False
+    if status == b"OK" or status.startswith(b"OK;"):
+        return True
+    if status == b"ERROR" or status.startswith(b"ERROR;"):
+        raise RuntimeError(f"Robot 拒絕指令（{script_id}，{script}）：{status!r}")
+    raise RuntimeError(f"Robot 指令回覆狀態無效（{script_id}）：{status!r}")
 
 
-    for byte in body:
-
-        checksum ^= byte
-
-
-    packet = (
-
-        b"$"
-
-        +
-
-        body
-
-        +
-
-        b"*"
-
-        +
-
-        f"{checksum:02X}".encode(
-            "ascii"
-        )
-
-        +
-
-        b"\r\n"
-
-    )
-
-
-    return packet
+def pose_from_frame(frame):
+    if frame.header != "TMSTA" or len(frame.payload) != 27 or not frame.payload.startswith(b"90,"):
+        return None
+    try:
+        pose = tuple(float(value) for value in struct.unpack("<6f", frame.payload[3:]))
+    except struct.error:
+        return None
+    return pose if all(math.isfinite(value) for value in pose) else None
 
 
 # ============================================================
@@ -804,15 +766,6 @@ def send_script(
     buffer = b""
 
 
-    expected_ok = (
-
-        f"{script_id},OK"
-
-    ).encode(
-        "ascii"
-    )
-
-
     while (
         time.time()
         <
@@ -833,7 +786,7 @@ def send_script(
 
         if not data:
 
-            continue
+            raise ConnectionError("Robot 已關閉 Listen 連線。")
 
 
         write_communication_log(
@@ -846,41 +799,12 @@ def send_script(
 
 
         buffer += data
-
-
-        # ----------------------------------------------------
-        # Controller Error
-        # ----------------------------------------------------
-
-        if b"CPERR" in buffer:
-
-            raise RuntimeError(
-
-                f"Robot CPERR："
-
-                f"{buffer!r}"
-
-            )
-
-
-        # ----------------------------------------------------
-        # 確認這一筆 Script ID 的 OK
-        # ----------------------------------------------------
-
-        if expected_ok in buffer:
-
-            print(
-
-                f"[Robot OK] "
-
-                f"{script_id} | "
-
-                f"{script}"
-
-            )
-
-
-            return buffer
+        frames, buffer = decode_frames(buffer)
+        for frame in frames:
+            raise_controller_error(frame, script)
+            if acknowledges(frame, script_id, script):
+                print(f"[Robot OK] {script_id} | {script}")
+                return frame.raw
 
 
     raise TimeoutError(
@@ -1003,198 +927,16 @@ def send_line(
 # $TMSTA,27,90,<24 bytes>,*XX\r\n
 # ============================================================
 
-def try_parse_pose_packet(
-    buffer
-):
-
-    marker = b"$TMSTA,"
-
-
-    search_start = 0
-
-
-    while True:
-
-        start = buffer.find(
-
-            marker,
-
-            search_start
-
-        )
-
-
-        if start < 0:
-
-            return None
-
-
-        # ----------------------------------------------------
-        # Length後逗號
-        # ----------------------------------------------------
-
-        comma_after_length = buffer.find(
-
-            b",",
-
-            start + len(marker)
-
-        )
-
-
-        if comma_after_length < 0:
-
-            return None
-
-
-        # ----------------------------------------------------
-        # ID後逗號
-        # ----------------------------------------------------
-
-        comma_after_id = buffer.find(
-
-            b",",
-
-            comma_after_length + 1
-
-        )
-
-
-        if comma_after_id < 0:
-
-            return None
-
-
-        data_id_bytes = buffer[
-
-            comma_after_length + 1:
-
-            comma_after_id
-
-        ]
-
-
-        data_id = (
-
-            data_id_bytes
-
-            .decode(
-                "ascii",
-                errors="ignore"
-            )
-
-            .strip()
-
-        )
-
-
-        # ----------------------------------------------------
-        # ListenSend ID = 90
-        # ----------------------------------------------------
-
-        if data_id != "90":
-
-            search_start = (
-
-                comma_after_id
-
-                +
-
-                1
-
-            )
-
-
-            continue
-
-
-        payload_start = (
-
-            comma_after_id
-
-            +
-
-            1
-
-        )
-
-
-        # ----------------------------------------------------
-        # 6 × float32
-        # ----------------------------------------------------
-
-        payload_end = (
-
-            payload_start
-
-            +
-
-            24
-
-        )
-
-
-        if (
-
-            len(buffer)
-
-            <
-
-            payload_end
-
-        ):
-
-            return None
-
-
-        pose_bytes = buffer[
-
-            payload_start:
-
-            payload_end
-
-        ]
-
-
-        try:
-
-            pose = struct.unpack(
-
-                "<6f",
-
-                pose_bytes
-
-            )
-
-
-        except struct.error:
-
-            return None
-
-
-        pose = tuple(
-
-            float(value)
-
-            for value
-            in pose
-
-        )
-
-
-        if not all(
-
-            math.isfinite(value)
-
-            for value
-            in pose
-
-        ):
-
-            return None
-
-
-        return pose
+def try_parse_pose_packet(buffer):
+    """Parse a pose only from complete, checksum-verified TM frames."""
+    frames, trailing = decode_frames(buffer)
+    if trailing:
+        return None
+    for frame in frames:
+        pose = pose_from_frame(frame)
+        if pose is not None:
+            return pose
+    return None
 
 
 # ============================================================
@@ -1281,15 +1023,6 @@ def read_robot_pose(
     got_ok = False
 
 
-    expected_ok = (
-
-        f"{script_id},OK"
-
-    ).encode(
-        "ascii"
-    )
-
-
     while (
         time.time()
         <
@@ -1310,7 +1043,7 @@ def read_robot_pose(
 
         if not data:
 
-            continue
+            raise ConnectionError("Robot 已關閉 Listen 連線。")
 
 
         write_communication_log(
@@ -1323,74 +1056,18 @@ def read_robot_pose(
 
 
         buffer += data
-
-
-        # ----------------------------------------------------
-        # CPERR
-        # ----------------------------------------------------
-
-        if b"CPERR" in buffer:
-
-            raise RuntimeError(
-
-                f"Robot CPERR："
-
-                f"{buffer!r}"
-
-            )
-
-
-        # ----------------------------------------------------
-        # Debug
-        # ----------------------------------------------------
-
-        if SHOW_POSE_PACKET_DEBUG:
-
-            if b"$TMSTA" in data:
-
-                print(
-                    "[Pose] 收到 TMSTA"
-                )
-
-
-            if expected_ok in buffer:
-
-                print(
-
-                    f"[Pose] 收到 "
-
-                    f"{script_id} OK"
-
-                )
-
-
-        # ----------------------------------------------------
-        # Pose
-        # ----------------------------------------------------
-
-        if pose is None:
-
-            parsed_pose = (
-                try_parse_pose_packet(
-                    buffer
-                )
-            )
-
-
+        frames, buffer = decode_frames(buffer)
+        for frame in frames:
+            raise_controller_error(frame, script)
+            parsed_pose = pose_from_frame(frame)
             if parsed_pose is not None:
-
-                pose = (
-                    parsed_pose
-                )
-
-
-        # ----------------------------------------------------
-        # 當次 POS OK
-        # ----------------------------------------------------
-
-        if expected_ok in buffer:
-
-            got_ok = True
+                pose = parsed_pose
+                if SHOW_POSE_PACKET_DEBUG:
+                    print("[Pose] 收到完整且 checksum 正確的 TMSTA")
+            if acknowledges(frame, script_id, script):
+                got_ok = True
+                if SHOW_POSE_PACKET_DEBUG:
+                    print(f"[Pose] 收到 {script_id} OK")
 
 
         # ====================================================
@@ -1846,12 +1523,9 @@ def prepare_vision_round(
     round_no
 ):
 
-    vision1_event.clear()
-
-    vision2_event.clear()
-
-
     with vision_lock:
+        vision1_event.clear()
+        vision2_event.clear()
 
         vision_state[
             "round"
@@ -1906,7 +1580,9 @@ def health():
         "POST"
     ]
 )
-def tmvision_detect():
+@app.route("/api/vision/tmvision/detect/v1", defaults={"view_no": 1}, methods=["GET", "POST"])
+@app.route("/api/vision/tmvision/detect/v2", defaults={"view_no": 2}, methods=["GET", "POST"])
+def tmvision_detect(view_no=None):
 
     if (
         request.method
@@ -1961,204 +1637,32 @@ def tmvision_detect():
 
 
     # --------------------------------------------------------
-    # Round / Photo
-    # --------------------------------------------------------
-
-    with vision_lock:
-
-        round_no = (
-
-            vision_state[
-                "round"
-            ]
-
-        )
-
-
-        vision_state[
-            "photo_number"
-        ] += 1
-
-
-        photo_no = (
-
-            vision_state[
-                "photo_number"
-            ]
-
-        )
-
-
-    # --------------------------------------------------------
-    # 一個Round只接受兩張
-    # --------------------------------------------------------
-
-    if photo_no > 2:
-
-        print(
-
-            f"[Flask] "
-
-            f"Round {round_no} "
-
-            f"收到多餘影像 "
-
-            f"#{photo_no}"
-
-        )
-
-
-        return jsonify({
-
-            "message":
-                "extra image ignored",
-
-            "annotations":
-                []
-
-        }), 200
-
-
-    view_no = (
-        photo_no
-    )
-
-
-    # ========================================================
-    # File Name
-    #
-    # TM_R001_V1_20261008_1_1.jpg
-    # ========================================================
-
-    date_text = (
-        datetime.now().strftime(
-            "%Y%m%d"
-        )
-    )
-
-
-    filename = (
-
-        f"TM_R{round_no:03d}_"
-
-        f"V{view_no}_"
-
-        f"{date_text}_"
-
-        f"{round_no}_"
-
-        f"{photo_no}.jpg"
-
-    )
-
-
-    image_path = (
-
-        IMAGE_DIR
-
-        /
-
-        filename
-
-    )
-
-
-    with open(
-
-        image_path,
-
-        "wb"
-
-    ) as f:
-
-        f.write(
-            image_bytes
-        )
-
-
-    print()
-
-    print(
-        "=" * 90
-    )
-
-
-    print(
-
-        f"[Flask] "
-
-        f"Round {round_no} "
-
-        f"Vision {view_no}"
-
-    )
-
-
-    print(
-
-        f"Saved："
-
-        f"{image_path}"
-
-    )
-
-
-    print(
-        "=" * 90
-    )
-
-
-    # --------------------------------------------------------
-    # Size
-    # --------------------------------------------------------
-
     try:
-
-        with Image.open(
-            image_path
-        ) as image:
-
-            image_w, image_h = (
-                image.size
-            )
-
-
-    except Exception:
-
-        image_w = 2592
-
-        image_h = 1944
-
-
-    # --------------------------------------------------------
-    # Event
-    # --------------------------------------------------------
+        with open_image(BytesIO(image_bytes), formats=("JPEG", "PNG")) as image:
+            image.load()
+            image_w, image_h = image.size
+    except (OSError, ValueError, Image.DecompressionBombError):
+        return jsonify(message="invalid image", annotations=[]), 400
 
     with vision_lock:
+        available = [n for n in (1, 2) if vision_state[f"v{n}_path"] is None]
+        if view_no is None:
+            if not available:
+                return jsonify(message="extra image ignored", annotations=[]), 200
+            view_no = available[0]
+        elif view_no not in available:
+            return jsonify(message=f"V{view_no} already received", annotations=[]), 409
 
-        if view_no == 1:
-
-            vision_state[
-                "v1_path"
-            ] = (
-                image_path
-            )
-
-
-            vision1_event.set()
-
-
-        elif view_no == 2:
-
-            vision_state[
-                "v2_path"
-            ] = (
-                image_path
-            )
-
-
-            vision2_event.set()
-
+        round_no = vision_state["round"]
+        photo_no = vision_state["photo_number"] + 1
+        date_text = datetime.now().strftime("%Y%m%d")
+        filename = f"TM_R{round_no:03d}_V{view_no}_{date_text}_{round_no}_{photo_no}.jpg"
+        image_path = IMAGE_DIR / filename
+        image_path.write_bytes(image_bytes)
+        vision_state["photo_number"] = photo_no
+        vision_state[f"v{view_no}_path"] = image_path
+        (vision1_event if view_no == 1 else vision2_event).set()
+        print(f"[Flask] Round {round_no} V{view_no} received {image_w}x{image_h} -> {image_path}", flush=True)
 
     # ========================================================
     # TMvision External Detection
@@ -4396,6 +3900,7 @@ def main():
     )
 
 
+    from ultralytics import YOLO
     model = YOLO(
 
         str(
@@ -4927,5 +4432,11 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
-
-    main()
+    if sys.argv[1:] == ["--receive-only"]:
+        prepare_vision_round(1)
+        print(f"Waiting for one V1 and one V2 on port {HTTP_PORT}. Photos: {IMAGE_DIR}", flush=True)
+        with make_server(HTTP_HOST, HTTP_PORT, app, threaded=True) as server:
+            server.serve_forever()
+        sys.exit(0)
+    with HardwareLease(SITE_ROOT / "runtime" / "tm5-hardware.lock"):
+        main()

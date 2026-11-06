@@ -263,9 +263,17 @@ class VisionConfig:
 class EngineConfig:
     executable: Path = PROJECT_ROOT / "engine_bin" / "pikafish.exe"
     nnue: Path = PROJECT_ROOT / "engine_bin" / "pikafish.nnue"
+    limit_strength: bool = True
+    target_elo: int = 1600
     movetime_ms: int = 500
-    depth: int = 2
+    depth: int = 5
     timeout_seconds: float = 15.0
+
+    def __post_init__(self) -> None:
+        if type(self.limit_strength) is not bool:
+            raise ValueError("Pikafish 限強開關必須是布林值。")
+        if type(self.target_elo) is not int or not 1280 <= self.target_elo <= 3133:
+            raise ValueError("Pikafish 目標 Elo 必須是 1280 到 3133 的整數。")
 
 
 @dataclass(frozen=True)

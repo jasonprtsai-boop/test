@@ -1,5 +1,13 @@
 # Decision log
 
+## 2026-11-02 — Pikafish 固定啟用 1600 Elo 棋力限制
+
+- **Decision:** 每次 Pikafish 程序啟動時明確送出 `UCI_LimitStrength=true` 與 `UCI_Elo=1600`；保留既有 depth／movetime 作為搜尋資源上限，不再把兩者視為棋力等級。
+- **Reason:** 原程式只限制 `depth 2 / movetime 500`，卻沿用 `Skill Level=20`、`UCI_LimitStrength=false`，因此沒有啟用引擎的降棋力機制。
+- **Evidence:** 155 筆既有 suggest 紀錄均實際完成 depth 2；抽取 20 個保存局面後，啟用 1600 Elo 有 13 個 `bestmove` 與原設定不同。真實引擎整合測試確認限強後著法仍通過合法性檢查。
+- **Alternatives:** 只再降低 depth 無法穩定模擬較弱玩家；立即建立未校準的 1–10 對照表會產生虛假精度，均未採用。
+- **Trade-off:** 1600 是引擎目標值，不是已驗證的真人等級；限強可能故意選擇非第一 PV，體感仍需以實際對局校準。
+
 ## 2026-10-19 — 依操作需求移除一次性啟動碼
 
 - **Decision:** 移除啟動碼產生、Flask operator session、解鎖／鎖定 API 與監控頁輸入欄位；保留 JSON、精確 localhost Origin、真機環境變數、每次啟動的 Base／TCP 人工確認、異常停止確認與動態預檢。
@@ -105,7 +113,7 @@
 
 ## 2026-10-13 — 雙視角與 AI 初始狀態建立明確身分
 
-- **Decision:** V1／V2 以各自 JPEG 解析度識別，拒絕未知尺寸與重複視角；AI 先手的新局必須辨識成完全相同的標準初始棋盤；YOLO 模型類別集合在首次載入時必須與盤面定義完全一致。
+- **Decision:** V1／V2 由 URL／欄位的明確 `v1`、`v2` 身分識別；只有設定為不同解析度時才允許以尺寸補充推定，絕不以抵達順序推定。拒絕未知尺寸、缺少身分與重複視角；AI 先手的新局必須辨識成完全相同的標準初始棋盤；YOLO 模型類別集合在首次載入時必須與盤面定義完全一致。
 - **Reason:** 網路到達順序不能代表相機身分；只通過一般盤面合法性不足以證明新局擺盤正確；類別索引錯配會把有效偵測轉成錯棋種。
 - **Trade-off:** 更換相機解析度或模型類別後會 fail closed，必須先更新設定與重新驗證。
 
@@ -222,7 +230,7 @@
 ## 2026-10-10 — 90 點巡檢與正式對局路徑隔離
 
 - **Decision:** 新增獨立的 9×10 點位巡檢工具；預設乾跑，真機需雙重確認，逐點記錄目標／實際 Pose 與誤差。
-- **Reason:** 校正巡檢的 Z=380／340／300 與正式對局 Z_SAFE=525／Z_APPROACH=355／Z_PICK=290 不同，不應修改或混入對局流程。
+- **Reason:** 當時校正巡檢的 Z=380／340／300 與當時正式對局 Z_SAFE=525／Z_APPROACH=355／Z_PICK=290 不同，不應修改或混入對局流程；2026-10-30 後正式 Z_SAFE 已改為 380。
 - **Safety boundary:** Z=300 高於正常單層棋子頂面約 9.7 mm，因此棋盤不必清空；但不得有堆疊、翹起棋子或異物。Z=380 低於正式安全高度，仍須人工確認路徑並提供明確 CLI 允許；停止軟體不能取代實體急停。
 - **Trade-off:** 執行步驟較多，但可避免誤啟動，並留下 90 點可核對的量測紀錄。
 
@@ -462,3 +470,30 @@
 - 歷史：玩家頁顯示重播完整度，沿用既有缺初始盤面禁止續局保護；產生唯讀舊局完整度索引，原快照與照片不改寫、不猜補。重建基準缺口不標成完整棋譜。
 - 文件：VALIDATION真機開關修正為預設啟用，設TMCHESS_HARDWARE_ENABLED=0停用；動態預檢仍必要。
 - Validation: 282項Python、6項前端互動測試及語法檢查通過；包含HTTP契約／實際JSON落盤／Excel結果與保存失敗回復。未操作真機。
+
+## 2026-11-01 — 語意與展示驗證一致化
+
+- 修正首頁與 README 的落子後拍攝宣稱；保留既有快速模式，不改變硬體路徑或安全鎖。
+- 玩家入口統一為「辨識並恢復對局」，揭示可能接續 AI 動作；引擎參數收合，改善表單與鍵盤焦點。
+- 新增獨立唯讀耗時統計工具，按操作及狀態分組，提供樣本數、中位數、P95 與缺失數；不改寫快照或推定辨識準確率。
+- 架構取捨：維持單一 GameService／狀態與佇列，將新增分析放在離線工具，避免為外觀重構引入真機競態。
+- 真機效果、模型比較實驗與既有 Word／PDF 逐頁美編不屬於本輪已驗證成果。
+
+## 2026-11-05 — 通訊、恢復與發布邊界收斂
+
+- **Robot protocol:** 網站 adapter 與 `full_test.py` 共用嚴格 `$Header,Length,Data,*CS\r\n` frame codec；只有 frame、length、delimiter、XOR checksum、CRLF 與相符 Script ID／狀態全部有效才接受 ACK 或 Pose。片段與串接 frame 可解析，裸字串與錯誤 checksum fail closed。
+- **Recovery and observations:** 雙人分析模式可在唯一合法的未提交人類著法後恢復；V1／V2 改由明確身分識別，不依抵達順序；目前棋盤先通過結構、兵卒位置與 Pikafish position/search 驗證才保存為基準。
+- **Control safety:** 磁碟空間在狀態查詢及每個開始／恢復命令前重新檢查；所有控制 POST 必須是可解析的 JSON object，無參數端點不再接受 malformed JSON、`null` 或陣列。
+- **Architecture:** `GameService` 保持唯一工作流程協調者，但將錯誤型別、預檢、Robot frame、hardware lease、session replay/schema 與 release identity 拆為獨立模組；沒有新增第二份遊戲狀態或 Robot 連線管理者。
+- **Hardware ownership:** 網站、點位工具與 `full_test.py` 共用 `runtime/tm5-hardware.lock`；舊真機腳本無法再繞過跨程序排他鎖。
+- **Release:** `release_manifest.json` 固定 Python、lock、YOLO、Pikafish、NNUE 與授權檔大小／SHA256；每局 JSON／Excel 保存 commit、tracked dirty 與資產指紋。`best.pt` 的原始訓練／授權來源未封存，因此公開發布仍明確阻擋，不虛構來源。
+- **Validation:** 299 項 Python 測試、7 項前端測試、release manifest 實檔驗證、compileall／`full_test.py` 編譯、JavaScript syntax、pip check、diff check 通過。未連接或操作 TM5-700；明確 V1/V2 的 TMflow 節點與真機 protocol 回覆仍待現場回歸。
+
+## 2026-11-05 — 核心協調與稽核紀錄分界
+
+- **Decision:** 將 move／capture／motion／engine／event 歷史、紀錄 payload、座標描述與動作量測組裝移入 `WorkflowJournal`；`GameService` 保留唯一即時盤面、狀態轉移、錯誤恢復及硬體命令佇列。
+- **Reason:** 稽核資料組裝是可獨立測試的衍生責任，原先與硬體工作流混在同一個大型類別，增加回歸與閱讀成本。
+- **Alternatives:** 未採用多個相互呼叫的 workflow service，因為拆分即時狀態與命令權限會提高競態風險；也未只搬移常數或重新命名，因為無法實質降低責任。
+- **Trade-off:** 為維持既有診斷與測試介面，`GameService` 暫時保留歷史 list 別名及少量薄包裝方法；list 由 journal 原地清除／恢復，不存在第二份歷史來源。
+- **Documentation:** TMflow 主設定統一為明確 `/v1`、`/v2`，巡檢文件改以目前 `Z_SAFE=380` 為準，硬體 lease 與驗證數同步現況。
+- **Validation:** 302 項 Python、7 項前端互動測試、compileall、JavaScript syntax、pip check、release assets 與 diff check 通過。未操作真機。

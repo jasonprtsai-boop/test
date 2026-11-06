@@ -65,6 +65,8 @@ def _predict_with_model(
                 "confidence": float(box.conf[0]),
                 "cx": (x1 + x2) / 2,
                 "cy": (y1 + y2) / 2,
+                "width": x2 - x1,
+                "height": y2 - y1,
             })
     return detections
 
@@ -212,7 +214,11 @@ class DualViewInbox:
             raise ValueError("JPEG 內容損壞或無法解析。") from exc
 
     def accept(
-        self, remote_ip: str | None, mimetype: str, data: bytes
+        self,
+        remote_ip: str | None,
+        mimetype: str,
+        data: bytes,
+        view: str | None = None,
     ) -> tuple[str, str, tuple[int, int]]:
         if remote_ip != self.allowed_ip:
             raise PermissionError("來源 IP 不允許。")
@@ -226,10 +232,19 @@ class DualViewInbox:
                 raise RuntimeError("目前沒有等待中的拍攝。")
             if len(self._paths) >= 2:
                 raise RuntimeError("本次拍攝已收到兩張影像。")
-            if self.expected_view_sizes:
+            if view is not None:
+                if view not in {"v1", "v2"}:
+                    raise ValueError("視角必須是 v1 或 v2。")
+                expected_size = self.expected_view_sizes.get(view)
+                if expected_size is not None and image_size != expected_size:
+                    raise ValueError(
+                        f"{view} 影像解析度 {image_size[0]}×{image_size[1]} 不符；"
+                        f"預期 {expected_size[0]}×{expected_size[1]}。"
+                    )
+            elif self.expected_view_sizes:
                 matches = [
-                    view
-                    for view, expected_size in self.expected_view_sizes.items()
+                    candidate
+                    for candidate, expected_size in self.expected_view_sizes.items()
                     if image_size == expected_size
                 ]
                 if len(matches) != 1:
@@ -239,10 +254,10 @@ class DualViewInbox:
                     )
                     raise ValueError(f"影像解析度 {image_size[0]}×{image_size[1]} 無法識別視角；預期 {expected}。")
                 view = matches[0]
-                if view in self._paths:
-                    raise RuntimeError(f"本次拍攝已收到 {view}，拒絕重複視角。")
             else:
-                view = f"v{len(self._paths) + 1}"
+                raise ValueError("無法從同解析度影像判定視角；上傳時必須明確指定 v1 或 v2。")
+            if view in self._paths:
+                raise RuntimeError(f"本次拍攝已收到 {view}，拒絕重複視角。")
             if self._filename_prefix is None:
                 raise RuntimeError("拍攝檔名尚未設定。")
             path = self.capture_root / f"{self._filename_prefix}_{view}.jpg"
@@ -270,7 +285,14 @@ class DualViewInbox:
                 self._filename_prefix = None
                 self._paths = {}
                 self._cancelled = False
-                raise TimeoutError(f"等待 V1 影像逾時（{timeout:g} 秒）。")
+                if self._closed:
+                    raise RuntimeError("影像接收服務已關閉。")
+                if first_ready:
+                    raise RuntimeError("拍攝等待已取消。")
+                raise TimeoutError(
+                    f"等待首張有效影像逾時（{timeout:g} 秒）。請核對 TMvision 的 "
+                    "External Image Processing 上傳網址，並查看系統紀錄中的 [VISION] 拒收原因。"
+                )
             second_ready = self._condition.wait_for(
                 lambda: len(self._paths) >= 2 or self._closed or self._cancelled,
                 timeout=timeout,
@@ -280,6 +302,10 @@ class DualViewInbox:
                 self._filename_prefix = None
                 self._paths = {}
                 self._cancelled = False
+                if self._closed:
+                    raise RuntimeError("影像接收服務已關閉。")
+                if second_ready:
+                    raise RuntimeError("拍攝等待已取消。")
                 raise TimeoutError(f"已收到一個視角，但等待另一個視角逾時（{timeout:g} 秒）。")
             if "v1" not in self._paths or "v2" not in self._paths:
                 self._active_id = None

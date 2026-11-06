@@ -1,5 +1,15 @@
 # Knowledge notes
 
+## Pikafish UCI strength limit
+
+- **Technology:** Pikafish `UCI_LimitStrength` / `UCI_Elo`
+- **Project version:** Pikafish 2026-09-25 Windows x86-64 universal build
+- **Observed behavior:** 本機 UCI 握手回報 `UCI_LimitStrength` 預設為 `false`、`UCI_Elo` 範圍為 1280–3133；專案現明確設定限強為 `true`、目標 1600。以 20 個保存局面和原本 `depth 2 / movetime 500` 實測，啟用 1600 後有 13 個局面的 `bestmove` 改變。
+- **Known limitation:** 1600 是該引擎的目標棋力參數，不是本專案已校準的真人象棋等級；仍需真人對局或對弈基準驗證體感。限強後 `bestmove` 可以不是 MultiPV 第一名，不能再以兩者相等作為正確性條件。
+- **Project relevance:** 每次引擎程序啟動都在 `isready` 前設定 EvalFile、`UCI_LimitStrength=true` 與 `UCI_Elo=1600`；狀態、引擎查詢紀錄與 Excel 設定快照保存限強值。
+- **Source:** 本機 `uci` 握手、20 個 runtime 保存局面對照測試、PikafishEngine 真實執行檔整合測試。
+- **Confidence:** 限強選項已送出且本機選著會改變為高；1600 對真人體感的對應尚未校準。
+
 ## Pikafish UCI analysis
 
 - **Technology:** Pikafish UCI engine

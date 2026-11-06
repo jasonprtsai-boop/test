@@ -209,7 +209,7 @@ class InboxTimeoutTests(unittest.TestCase):
                 ),
             )
 
-    def test_same_resolution_uses_tmflow_arrival_order_when_sizes_are_not_configured(self):
+    def test_same_resolution_uses_explicit_view_identity(self):
         (SITE_ROOT / "runtime").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=SITE_ROOT / "runtime") as directory:
             inbox = DualViewInbox(
@@ -221,14 +221,14 @@ class InboxTimeoutTests(unittest.TestCase):
             inbox.arm("20261010T010203Z-12345678")
 
             _capture, first_view, first_size = inbox.accept(
-                "127.0.0.1", "image/jpeg", self.jpeg(20, 14)
+                "127.0.0.1", "image/jpeg", self.jpeg(20, 14), "v2"
             )
             _capture, second_view, second_size = inbox.accept(
-                "127.0.0.1", "image/jpeg", self.jpeg(20, 14)
+                "127.0.0.1", "image/jpeg", self.jpeg(20, 14), "v1"
             )
             v1, v2 = inbox.wait(0.01)
 
-            self.assertEqual((first_view, second_view), ("v1", "v2"))
+            self.assertEqual((first_view, second_view), ("v2", "v1"))
             self.assertEqual((first_size, second_size), ((20, 14), (20, 14)))
             self.assertEqual(
                 (v1.name, v2.name),
@@ -237,6 +237,15 @@ class InboxTimeoutTests(unittest.TestCase):
                     "20261010T010203Z-12345678_v2.jpg",
                 ),
             )
+
+    def test_same_resolution_rejects_missing_view_identity(self):
+        (SITE_ROOT / "runtime").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=SITE_ROOT / "runtime") as directory:
+            inbox = DualViewInbox(Path(directory), "127.0.0.1", 1024 * 1024)
+            inbox.set_receiver_ready(True)
+            inbox.arm("20261010T010203Z-12345678")
+            with self.assertRaisesRegex(ValueError, "明確指定 v1 或 v2"):
+                inbox.accept("127.0.0.1", "image/jpeg", self.jpeg(20, 14))
 
     def test_view_identity_configuration_requires_two_distinct_sizes(self):
         (SITE_ROOT / "runtime").mkdir(exist_ok=True)
@@ -278,7 +287,7 @@ class InboxTimeoutTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 inbox.wait(0.01)
             with self.assertRaises(RuntimeError):
-                inbox.accept("127.0.0.1", "image/jpeg", self.jpeg())
+                inbox.accept("127.0.0.1", "image/jpeg", self.jpeg(), "v1")
 
     def test_second_view_gets_its_own_timeout_window(self):
         (SITE_ROOT / "runtime").mkdir(exist_ok=True)
@@ -286,7 +295,7 @@ class InboxTimeoutTests(unittest.TestCase):
             inbox = DualViewInbox(Path(directory), "127.0.0.1", 1024)
             inbox.set_receiver_ready(True)
             inbox.arm("20261010T010203Z-12345678")
-            inbox.accept("127.0.0.1", "image/jpeg", self.jpeg())
+            inbox.accept("127.0.0.1", "image/jpeg", self.jpeg(), "v1")
             with self.assertRaisesRegex(TimeoutError, "已收到一個視角.*等待另一個視角"):
                 inbox.wait(0.01)
 
@@ -300,8 +309,8 @@ class InboxTimeoutTests(unittest.TestCase):
             inbox.set_receiver_ready(True)
             inbox.select_game(game_id)
             inbox.arm(capture_id)
-            inbox.accept("127.0.0.1", "image/jpeg", self.jpeg())
-            inbox.accept("127.0.0.1", "image/jpeg", self.jpeg())
+            inbox.accept("127.0.0.1", "image/jpeg", self.jpeg(), "v1")
+            inbox.accept("127.0.0.1", "image/jpeg", self.jpeg(), "v2")
 
             v1, v2 = inbox.wait(0.01)
 
@@ -321,8 +330,8 @@ class InboxTimeoutTests(unittest.TestCase):
             inbox.set_receiver_ready(True)
             inbox.select_game(game_id)
             inbox.arm(capture_id, f"R003_C005_player_move_{capture_id}")
-            inbox.accept("127.0.0.1", "image/jpeg", self.jpeg())
-            inbox.accept("127.0.0.1", "image/jpeg", self.jpeg())
+            inbox.accept("127.0.0.1", "image/jpeg", self.jpeg(), "v1")
+            inbox.accept("127.0.0.1", "image/jpeg", self.jpeg(), "v2")
 
             v1, v2 = inbox.wait(0.01)
 

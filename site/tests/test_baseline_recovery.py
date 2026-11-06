@@ -26,6 +26,22 @@ class BaselineRecoveryTests(unittest.TestCase):
         self.assertEqual(engine.suggest_calls, 0)
         self.assertEqual(robot.moves, [])
 
+    def test_engine_rejected_baseline_is_never_accepted_or_persisted(self):
+        self.service, robot, _vision, engine = make_service(
+            [starting_board()], engine_error='has_legal'
+        )
+
+        self.service.submit_start_current('red', 'player', continuation='new')
+        state = wait_for(self.service, Phase.ERROR.value)
+
+        self.assertIn('game-status failed', state['message'])
+        self.assertIsNone(self.service._board)
+        self.assertIsNone(self.service._initial_board)
+        self.assertEqual(engine.has_legal_calls, 1)
+        self.assertEqual(robot.moves, [])
+        self.assertIsNone(self.service._last_snapshot['board'])
+        self.assertIsNone(self.service._last_snapshot['initial_board'])
+
     def test_pawn_river_boundary_for_both_colors(self):
         for piece, row, col, valid in [(14, 4, 0, True), (14, 4, 1, False),
                                        (14, 5, 1, True), (14, 2, 0, False),

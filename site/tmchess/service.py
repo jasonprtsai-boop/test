@@ -5,11 +5,10 @@ from __future__ import annotations
 import copy
 import logging
 import queue
-import shutil
 import threading
 import time
 import uuid
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -23,145 +22,39 @@ from .board import (
     clone_board,
     find_player_move,
     is_red,
-    parse_uci_move,
     position_to_uci,
     standard_starting_board,
     validate_board,
     validate_pawn_positions,
 )
 from .config import AppConfig
+from .errors import CommandConflict, StatePersistenceError, VerificationError
+from .preflight import PreflightChecker
 from .records import GameRecordWriter
+from .release import runtime_build_identity
 from .robot import GripperStateUnknown, Pose, RobotCallbacks, StopRequested
-from .session import GAME_ID_PATTERN, GameSessionStore, SessionCorruptionError
+from .session import GameSessionStore, SessionCorruptionError
+from .session_context import (
+    deserialize_move,
+    has_complete_replay_context,
+    serialize_move,
+    session_lineage,
+)
 from .state import Phase, StateStore, initial_state, utc_now
 from .vision import BoardObservationError
+from .workflow_journal import (
+    WorkflowJournal,
+    capture_purpose_code,
+    complete_motion_record,
+    position_details,
+    record_settings,
+    serialize_analysis_line,
+    update_artifact_status,
+    update_observation_record,
+)
 
 
 LOGGER = logging.getLogger(__name__)
-
-
-class CommandConflict(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-
-
-class StatePersistenceError(RuntimeError):
-    """A control command could not be committed to durable storage."""
-
-    code = "state_persistence_failed"
-
-
-class VerificationError(RuntimeError):
-    def __init__(self, message: str, observed: Board | None = None) -> None:
-        super().__init__(message)
-        self.observed = observed
-
-
-class PreflightChecker:
-    def __init__(self, config: AppConfig, robot, vision, engine) -> None:
-        self.config = config
-        self.robot = robot
-        self.vision = vision
-        self.engine = engine
-        self._operator_lock = threading.Lock()
-        self._base_tcp_confirmed = False
-
-    def confirm_base_tcp(self, base_name: str, tcp_name: str) -> None:
-        expected_base = self.config.motion.base_name
-        expected_tcp = self.config.motion.tcp_name
-        if base_name != expected_base or tcp_name != expected_tcp:
-            raise CommandConflict(
-                "base_tcp_mismatch",
-                f"必須確認 TMflow 顯示 {expected_base} / {expected_tcp}。",
-            )
-        with self._operator_lock:
-            self._base_tcp_confirmed = True
-
-    def base_tcp_confirmed(self) -> bool:
-        with self._operator_lock:
-            return self._base_tcp_confirmed
-
-    @staticmethod
-    def _check(checks: list[dict[str, Any]], key: str, label: str, ok: bool, detail: str) -> None:
-        checks.append({"key": key, "label": label, "ok": bool(ok), "detail": detail})
-
-    def run(self, dynamic: bool = True) -> dict[str, Any]:
-        c = self.config
-        checks: list[dict[str, Any]] = []
-        self._check(checks, "hardware_enabled", "真機動作開關", c.safety.hardware_enabled,
-                    "已啟用" if c.safety.hardware_enabled else "HARDWARE_ENABLED 已關閉")
-        missing = c.motion.missing_fields()
-        self._check(checks, "coordinates", "棋盤、姿態、Z 與落子箱座標", not missing,
-                    "完整" if not missing else "缺少：" + ", ".join(missing))
-        safety_flags = {
-            "emergency_stop": ("實體急停確認", c.safety.emergency_stop_confirmed),
-            "motion_parameters": ("速度與加速度簽核", c.safety.motion_parameters_verified),
-            "dual_view_upload": ("V1／V2 即時上傳簽核", c.safety.dual_view_upload_verified),
-            "base": ("Base 簽核", c.safety.base_verified),
-            "tcp": ("TCP 簽核", c.safety.tcp_verified),
-            "base_tcp_runtime_guard": (
-                "Base／TCP 啟動時一致性保護",
-                c.safety.base_tcp_runtime_guard_verified,
-            ),
-            "board": ("棋盤 9×10 矩陣簽核", c.safety.board_coordinates_verified),
-            "z": ("三段 Z 高度簽核", c.safety.z_heights_verified),
-            "graveyard": ("落子箱簽核", c.safety.graveyard_verified),
-            "graveyard_capacity": (
-                "落子箱滿載容量風險接受",
-                c.safety.graveyard_capacity_risk_accepted,
-            ),
-        }
-        for key, (label, ok) in safety_flags.items():
-            self._check(checks, key, label, ok, "已確認" if ok else "尚未確認")
-        model_ok = c.vision.model_path.is_file()
-        engine_ok = c.engine.executable.is_file() and c.engine.nnue.is_file()
-        self._check(checks, "model", "YOLO 模型檔", model_ok, str(c.vision.model_path))
-        self._check(checks, "pikafish", "Pikafish 與 NNUE", engine_ok, str(c.engine.executable.parent))
-        disk_target = c.capture_root if c.capture_root.exists() else c.capture_root.parent
-        try:
-            free_bytes = shutil.disk_usage(disk_target).free
-        except OSError as exc:
-            self._check(checks, "disk_space", "執行資料磁碟空間", False, str(exc))
-        else:
-            disk_ok = free_bytes >= c.minimum_free_disk_bytes
-            self._check(
-                checks,
-                "disk_space",
-                "執行資料磁碟空間",
-                disk_ok,
-                f"可用 {free_bytes / (1024 ** 3):.2f} GiB；最低 1.00 GiB",
-            )
-        static_ready = all(item["ok"] for item in checks)
-        if dynamic and static_ready:
-            confirmed = self.base_tcp_confirmed()
-            self._check(
-                checks,
-                "base_tcp_runtime_confirmation",
-                "本次啟動 Base／TCP 人工確認",
-                confirmed,
-                (
-                    f"已確認 {c.motion.base_name} / {c.motion.tcp_name}"
-                    if confirmed
-                    else f"請在操作端確認 {c.motion.base_name} / {c.motion.tcp_name}"
-                ),
-            )
-            if not confirmed:
-                return {"ready": False, "checks": checks, "checked_at": utc_now()}
-            for key, label, probe in (
-                ("vision_runtime", "TMvision receiver 與 YOLO 載入", self.vision.check_ready),
-                ("engine_runtime", "Pikafish 啟動", self.engine.start),
-                ("listen_runtime", "Listen、Pose 與吸盤關閉", self.robot.probe),
-            ):
-                try:
-                    probe()
-                except Exception as exc:
-                    self._check(checks, key, label, False, str(exc))
-                else:
-                    self._check(checks, key, label, True, "通過")
-        elif dynamic:
-            self._check(checks, "runtime", "真機動態預檢", False, "靜態安全條件未完成，未連線")
-        return {"ready": all(item["ok"] for item in checks), "checks": checks, "checked_at": utc_now()}
 
 
 class GameService:
@@ -171,6 +64,13 @@ class GameService:
         "engine_vs_engine": ({"w": "engine", "b": "engine"}, "step", "ai"),
         "analysis": ({"w": "human", "b": "human"}, "analysis", "player"),
     }
+    # Compatibility aliases keep the existing private call sites and audit
+    # tests stable while the persisted-session responsibility lives outside
+    # the workflow coordinator.
+    _has_complete_replay_context = staticmethod(has_complete_replay_context)
+    _lineage = staticmethod(session_lineage)
+    _serialize_move = staticmethod(serialize_move)
+    _deserialize_move = staticmethod(deserialize_move)
 
     def __init__(
         self,
@@ -192,6 +92,7 @@ class GameService:
         self.preflight_checker = preflight_checker or PreflightChecker(config, robot, vision, engine)
         self.session_store = session_store
         self.record_writer = record_writer
+        self._build_identity = runtime_build_identity(config)
         self._record_schedule_error: str | None = None
         self._queue: queue.Queue[tuple[str, Any] | None] = queue.Queue()
         self._lock = threading.RLock()
@@ -200,16 +101,20 @@ class GameService:
         self._instance_id = uuid.uuid4().hex
         self._preflight_monitor_started = False
         self._preflight_thread: threading.Thread | None = None
+        self._last_disk_check_at = 0.0
         self._close_event = threading.Event()
         self._stop_event = threading.Event()
         self._board: Board | None = None
         self._game_id: str | None = None
         self._game_started_at: str | None = None
-        self._move_history: list[dict[str, Any]] = []
-        self._capture_history: list[dict[str, Any]] = []
-        self._motion_history: list[dict[str, Any]] = []
-        self._event_history: list[dict[str, Any]] = []
-        self._engine_history: list[dict[str, Any]] = []
+        self._journal = WorkflowJournal()
+        # Compatibility aliases for existing diagnostics and tests. The lists
+        # are owned and reset in-place by WorkflowJournal.
+        self._move_history = self._journal.move_history
+        self._capture_history = self._journal.capture_history
+        self._motion_history = self._journal.motion_history
+        self._event_history = self._journal.event_history
+        self._engine_history = self._journal.engine_history
         self._battle_metadata: dict[str, Any] = {}
         self._last_snapshot: dict[str, Any] | None = None
         self._game_mode = "standard"
@@ -241,43 +146,6 @@ class GameService:
     def _bind_callbacks(self) -> None:
         if hasattr(self.robot, "callbacks"):
             self.robot.callbacks = RobotCallbacks(self._on_pose, self._on_action)
-
-    @staticmethod
-    def _has_complete_replay_context(snapshot: dict[str, Any]) -> bool:
-        initial_board = snapshot.get("initial_board")
-        board = snapshot.get("board")
-        if not isinstance(initial_board, list):
-            return False
-        try:
-            validate_board(initial_board)
-        except (TypeError, ValueError):
-            return False
-        if snapshot.get("initial_side_to_move") not in ("w", "b"):
-            return False
-        move_history = snapshot.get("move_history")
-        if not isinstance(move_history, list) or not isinstance(board, list):
-            return False
-        replay = clone_board(initial_board)
-        side = str(snapshot["initial_side_to_move"])
-        try:
-            for item in move_history:
-                if not isinstance(item, dict) or not isinstance(item.get("uci"), str):
-                    return False
-                source, destination = parse_uci_move(item["uci"])
-                piece = replay[source[1]][source[0]]
-                if piece == 0 or is_red(piece) != (side == "w"):
-                    return False
-                move = Move(
-                    source,
-                    destination,
-                    replay[destination[1]][destination[0]],
-                    item["uci"],
-                )
-                replay = apply_move(replay, move)
-                side = "b" if side == "w" else "w"
-        except (IndexError, TypeError, ValueError):
-            return False
-        return replay == board and snapshot.get("side_to_move") == side
 
     def _load_resume_candidate(self) -> None:
         if self.session_store is None:
@@ -465,12 +333,15 @@ class GameService:
     def set_engine_depth(self, value):
         return self._set_engine_limit("depth", value, 1, 30)
 
+    def set_engine_target_elo(self, value):
+        return self._set_engine_limit("target_elo", value, 1280, 3133)
+
     def _set_engine_limit(self, field, value, minimum, maximum):
         if type(value) is not int or not minimum <= value <= maximum:
             raise ValueError(f"設定必須是 {minimum} 到 {maximum} 的整數。")
         with self._lock:
             settings = replace(self.config.engine, **{field: value})
-            self.engine.config = settings
+            self.engine.update_config(settings)
             self.config = replace(self.config, engine=settings)
             return {field: value}
 
@@ -478,11 +349,42 @@ class GameService:
         with self._lock:
             return self._get_state_locked()
 
+    def _refresh_disk_space_locked(self, *, force: bool = False) -> None:
+        """Refresh the volatile disk check without repeating hardware probes."""
+        now = time.monotonic()
+        if not force and now - self._last_disk_check_at < 5.0:
+            return
+        self._last_disk_check_at = now
+        check = self.preflight_checker.disk_space_check()
+        preflight = self.store.snapshot().get("preflight", {})
+        checks = list(preflight.get("checks", []))
+        existing_index = next(
+            (index for index, item in enumerate(checks) if item.get("key") == "disk_space"),
+            None,
+        )
+        existing = checks[existing_index] if existing_index is not None else None
+        if existing is not None and existing.get("ok") == check["ok"]:
+            return
+        if existing_index is None:
+            checks.append(check)
+        else:
+            checks[existing_index] = check
+        report = {
+            **preflight,
+            "checks": checks,
+            "ready": all(item.get("ok") for item in checks),
+            "checked_at": utc_now(),
+        }
+        self._set_preflight(report)
+
     def _get_state_locked(self) -> dict[str, Any]:
+        self._refresh_disk_space_locked()
         snapshot = self.store.snapshot()
         snapshot["instance_id"] = self._instance_id
         snapshot["engine_movetime_ms"] = self.config.engine.movetime_ms
         snapshot["engine_depth"] = self.config.engine.depth
+        snapshot["engine_limit_strength"] = self.config.engine.limit_strength
+        snapshot["engine_target_elo"] = self.config.engine.target_elo
         pose_time = snapshot["robot"].get("pose_updated_at")
         if pose_time:
             try:
@@ -681,11 +583,7 @@ class GameService:
             self._pending_move = self._pending_expected = self._pending_before = self._last_observed = None
             self._pending_retry_count = 0
             self._initial_board = None
-            self._move_history = []
-            self._capture_history = []
-            self._motion_history = []
-            self._event_history = []
-            self._engine_history = []
+            self._journal.reset()
             self._battle_metadata = {}
             # Retain the last battle as a recovery candidate across a page
             # reset. Explicit standard/new start still creates a new battle.
@@ -725,6 +623,7 @@ class GameService:
     def _submit_start_mode(self, mode: str, *, record_name: str = "") -> dict[str, Any]:
         controllers, execution_mode, first_actor = self.START_MODES[mode]
         with self._lock:
+            self._refresh_disk_space_locked(force=True)
             state = self.get_state()
             self._require(state["controls"]["can_start"], "preflight_or_state_blocked", "安全預檢未通過，或目前狀態不能開始。")
             self._busy = True
@@ -791,6 +690,7 @@ class GameService:
         if mode is not None:
             self._require(player_color == "red", "invalid_player_color", "新模式固定以紅方作為玩家方。")
         with self._lock:
+            self._refresh_disk_space_locked(force=True)
             state = self.get_state()
             self._require(
                 state["controls"]["can_start_current"],
@@ -867,6 +767,7 @@ class GameService:
             "current_actor 必須是 player 或 ai。",
         )
         with self._lock:
+            self._refresh_disk_space_locked(force=True)
             state = self.get_state()
             self._require(
                 state["controls"]["can_resume"] and self._resume_snapshot is not None,
@@ -1206,11 +1107,7 @@ class GameService:
         self._game_mode = game_mode
         self._initial_board = None
         self._initial_side_to_move = self._side_to_move
-        self._move_history = []
-        self._capture_history = []
-        self._motion_history = []
-        self._event_history = []
-        self._engine_history = []
+        self._journal.reset()
         self._pending_metrics = {}
         self._last_capture_record = None
         self._resume_snapshot = None
@@ -1220,80 +1117,6 @@ class GameService:
             state["game"].update(id=game_id, **self._battle_metadata),
             state["vision"].update(initial_state()["vision"]),
         ))
-
-    @staticmethod
-    def _lineage(snapshot: dict[str, Any]) -> dict[str, Any]:
-        game_id = snapshot.get('game_id')
-        battle_id = snapshot.get('battle_id') or game_id
-        parent = snapshot.get('parent_game_id')
-        index = snapshot.get('segment_index', 1)
-        if any(not isinstance(v, str) or not GAME_ID_PATTERN.fullmatch(v) for v in (game_id, battle_id)):
-            raise ValueError('保存的對戰編號格式錯誤。')
-        if parent is not None and (not isinstance(parent, str) or not GAME_ID_PATTERN.fullmatch(parent) or parent == game_id):
-            raise ValueError('保存的上一個片段編號錯誤。')
-        if type(index) is not int or index < 1:
-            raise ValueError('保存的片段序號錯誤。')
-        return dict(**({"record_name": str(snapshot.get("record_name") or "")[:40]} if "record_name" in snapshot else {}), battle_id=battle_id, parent_game_id=parent, segment_index=index,
-                    segment_reason=snapshot.get('segment_reason', 'legacy_segment'),
-                    history_gap=bool(snapshot.get('history_gap', False)),
-                    battle_started_at=snapshot.get('battle_started_at') or snapshot.get('started_at'))
-
-    @staticmethod
-    def _serialize_move(move: Move | None) -> dict[str, Any] | None:
-        if move is None:
-            return None
-        return {
-            "source": list(move.source),
-            "destination": list(move.destination),
-            "captured_piece": move.captured_piece,
-            "uci": move.uci,
-        }
-
-    @staticmethod
-    def _serialize_analysis_line(line: Any, side: str) -> dict[str, Any]:
-        payload = asdict(line)
-        payload["pv"] = list(line.pv)
-        if line.wdl is not None:
-            side_win, draw, side_loss = line.wdl
-            red_win, black_win = (
-                (side_win, side_loss) if side == "w" else (side_loss, side_win)
-            )
-            payload.update(
-                red_win_per_mille=red_win,
-                draw_per_mille=draw,
-                black_win_per_mille=black_win,
-            )
-        return payload
-
-    @staticmethod
-    def _deserialize_move(payload: Any) -> Move | None:
-        if payload is None:
-            return None
-        if not isinstance(payload, dict):
-            raise ValueError("保存的 pending move 格式錯誤。")
-        source = payload.get("source")
-        destination = payload.get("destination")
-        if (
-            not isinstance(source, list)
-            or not isinstance(destination, list)
-            or len(source) != 2
-            or len(destination) != 2
-            or any(type(value) is not int for value in source + destination)
-            or not isinstance(payload.get("uci"), str)
-        ):
-            raise ValueError("保存的 pending move 座標錯誤。")
-        parsed_source, parsed_destination = parse_uci_move(payload["uci"])
-        if tuple(source) != parsed_source or tuple(destination) != parsed_destination:
-            raise ValueError("保存的 pending move 座標與 UCI 不一致。")
-        captured = payload.get("captured_piece", 0)
-        if type(captured) is not int or captured not in range(15):
-            raise ValueError("保存的 pending move 吃子資料錯誤。")
-        return Move(
-            (int(source[0]), int(source[1])),
-            (int(destination[0]), int(destination[1])),
-            captured,
-            str(payload.get("uci", "")),
-        )
 
     def _persist_session(self) -> None:
         # Compose the snapshot and update record history under the same lock as
@@ -1307,7 +1130,12 @@ class GameService:
             return
         state = self.get_state()
         saved_at = utc_now()
-        self._append_record_history(state, saved_at)
+        self._journal.append_state_history(
+            state,
+            saved_at,
+            player_side=self._player_side,
+            ai_side=self._ai_side,
+        )
         payload = {
             "schema_version": 3,
             "game_id": self._game_id,
@@ -1341,7 +1169,7 @@ class GameService:
             "event_history": self._event_history,
             "engine_history": self._engine_history,
             "pending_metrics": self._pending_metrics,
-            "settings": self._record_settings(),
+            "settings": record_settings(self.config, self._build_identity),
         }
         if self.session_store is not None:
             try:
@@ -1359,91 +1187,6 @@ class GameService:
         except Exception as exc:
             self._record_schedule_error = str(exc)
             LOGGER.exception("[RECORD] Excel scheduling failed; durable session remains authoritative")
-
-    def _append_record_history(self, state: dict[str, Any], recorded_at: str) -> None:
-        last_move = state.get("last_move")
-        if isinstance(last_move, dict):
-            marker = (
-                last_move.get("committed_at"),
-                last_move.get("actor"),
-                last_move.get("uci"),
-                tuple(last_move.get("source", [])),
-                tuple(last_move.get("destination", [])),
-            )
-            previous_marker = None
-            if self._move_history:
-                previous = self._move_history[-1]
-                previous_marker = (
-                    previous.get("committed_at"),
-                    previous.get("actor"),
-                    previous.get("uci"),
-                    tuple(previous.get("source", [])),
-                    tuple(previous.get("destination", [])),
-                )
-            if marker != previous_marker:
-                actor = str(last_move.get("actor", ""))
-                source = last_move.get("source", [])
-                destination = last_move.get("destination", [])
-                self._move_history.append({
-                    **last_move,
-                    "sequence": len(self._move_history) + 1,
-                    "committed_at": last_move.get("committed_at") or recorded_at,
-                    "side": (
-                        last_move.get("side")
-                        or (self._player_side if actor == "player" else self._ai_side)
-                    ),
-                    "source_text": position_to_uci(tuple(source)) if len(source) == 2 else "",
-                    "destination_text": position_to_uci(tuple(destination)) if len(destination) == 2 else "",
-                    "capture_id": (
-                        last_move.get("capture_id")
-                        or state.get("vision", {}).get("capture_id")
-                    ),
-                })
-
-        error = state.get("error") if isinstance(state.get("error"), dict) else None
-        robot = state.get("robot", {})
-        vision = state.get("vision", {})
-        event = {
-            "recorded_at": recorded_at,
-            "phase": state.get("phase"),
-            "current_turn": state.get("current_turn"),
-            "message": state.get("message"),
-            "capture_id": (
-                vision.get("active_capture_id")
-                or vision.get("last_attempt_id")
-                or vision.get("capture_id")
-            ),
-            "current_action": robot.get("current_action"),
-            "next_action": robot.get("next_action"),
-            "motion_state_uncertain": bool(robot.get("motion_may_continue")),
-            "error": error,
-        }
-        comparable = {key: value for key, value in event.items() if key != "recorded_at"}
-        previous_comparable = None
-        if self._event_history:
-            previous_comparable = {
-                key: value for key, value in self._event_history[-1].items()
-                if key not in ("recorded_at", "sequence")
-            }
-        if comparable != previous_comparable:
-            event["sequence"] = len(self._event_history) + 1
-            self._event_history.append(event)
-
-    def _record_settings(self) -> dict[str, Any]:
-        return {
-            "post_move_image_verification": False,
-            "hardware_enabled": self.config.safety.hardware_enabled,
-            "engine_depth": self.config.engine.depth,
-            "engine_movetime_ms": self.config.engine.movetime_ms,
-            "base_name": self.config.motion.base_name,
-            "tcp_name": self.config.motion.tcp_name,
-            "speed": self.config.motion.speed,
-            "acceleration": self.config.motion.acceleration,
-            "z_safe": self.config.motion.z_safe,
-            "z_approach": self.config.motion.z_approach,
-            "z_pick": self.config.motion.z_pick,
-            "vision_confidence": self.config.vision.confidence,
-        }
 
     def _restore_session(self, snapshot: dict[str, Any]) -> None:
         game_id = str(snapshot.get("game_id", ""))
@@ -1498,16 +1241,7 @@ class GameService:
         self._battle_metadata = self._lineage(snapshot)
         self.store.update(lambda state: state["game"].update(id=game_id, **self._battle_metadata))
         self._game_started_at = str(snapshot.get("started_at") or snapshot.get("saved_at") or utc_now())
-        move_history = snapshot.get("move_history")
-        capture_history = snapshot.get("capture_history")
-        motion_history = snapshot.get("motion_history")
-        event_history = snapshot.get("event_history")
-        self._move_history = [dict(item) for item in move_history if isinstance(item, dict)] if isinstance(move_history, list) else []
-        self._capture_history = [dict(item) for item in capture_history if isinstance(item, dict)] if isinstance(capture_history, list) else []
-        self._motion_history = [dict(item) for item in motion_history if isinstance(item, dict)] if isinstance(motion_history, list) else []
-        self._event_history = [dict(item) for item in event_history if isinstance(item, dict)] if isinstance(event_history, list) else []
-        engine_history = snapshot.get("engine_history")
-        self._engine_history = copy.deepcopy([q for q in engine_history if isinstance(q, dict)]) if isinstance(engine_history, list) else []
+        self._journal.restore(snapshot)
         self._game_mode = str(snapshot.get("game_mode") or "standard")
         initial_board = snapshot.get("initial_board")
         self._initial_board = clone_board(initial_board)
@@ -1546,44 +1280,11 @@ class GameService:
         if hasattr(self.vision, "select_game"):
             self.vision.select_game(game_id)
 
-    @staticmethod
-    def _capture_purpose_code(purpose: str) -> str:
-        return {
-            "初始盤面": "initial",
-            "以目前棋盤建立對局": "current_board",
-            "恢復上一局": "resume",
-            "玩家走子": "player_move",
-            "AI 落子驗證": "ai_verify",
-            "重試前盤面確認": "retry_check",
-        }.get(purpose, "capture")
-
     def _current_round(self) -> int:
-        # One round contains up to two committed plies. For a mid-game import,
-        # this is the round number within the newly recorded session.
-        return len(self._move_history) // 2 + 1
-
-    @staticmethod
-    def _confidence_summary(confidence: Any) -> tuple[float | None, float | None, float | None]:
-        values = [
-            float(value)
-            for row in confidence or []
-            for value in row
-            if isinstance(value, (int, float))
-        ]
-        if not values:
-            return None, None, None
-        return min(values), sum(values) / len(values), max(values)
+        return self._journal.current_round()
 
     def _record_observation(self, record: dict[str, Any], result: Any) -> None:
-        low, average, high = self._confidence_summary(result.confidence)
-        record.update(
-            observed_board=clone_board(result.board), confidence_grid=copy.deepcopy(result.confidence),
-            v1_yolo=result.v1_path.name, v2_yolo=result.v2_path.name,
-            result_json=result.result_path.name if result.result_path is not None else record.get("result_json"),
-            capture_seconds=result.capture_seconds, processing_seconds=result.processing_seconds,
-            total_seconds=result.total_seconds, confidence_min=low, confidence_avg=average,
-            confidence_max=high, detected_pieces=sum(piece != 0 for row in result.board for piece in row),
-        )
+        update_observation_record(record, result)
 
         # Diagnostic images exist before board validation or stationary checks.
         # Publish them without accepting the board or marking motion complete.
@@ -1601,22 +1302,14 @@ class GameService:
     def _record_capture_artifacts(self, record: dict[str, Any]) -> None:
         """Only link files that exist, retaining expected names as diagnostics."""
         directory = self.session_store.game_directory(self._game_id) if self.session_store and self._game_id else None
-        expected = record.setdefault("expected_artifacts", {})
-        status = record.setdefault("artifact_status", {})
-        for key in ("v1_raw", "v2_raw", "v1_yolo", "v2_yolo", "result_json"):
-            name = record.get(key) or expected.get(key)
-            if name:
-                expected[key] = name
-            exists = bool(directory and name and (directory / name).is_file())
-            status[key] = "available" if exists else "not_received" if key.endswith("raw") else "not_generated"
-            record[key] = name if exists else None
+        update_artifact_status(record, directory)
 
     def _capture(self, purpose: str):
         self._guard_running()
         capture_id = self._capture_id()
         round_number = self._current_round()
         sequence = len(self._capture_history) + 1
-        purpose_code = self._capture_purpose_code(purpose)
+        purpose_code = capture_purpose_code(purpose)
         prefix = capture_id
         if hasattr(self.vision, "configure_capture"):
             prefix = self.vision.configure_capture(round_number, sequence, purpose_code)
@@ -1802,6 +1495,8 @@ class GameService:
             "requested_move": args[0].uci if args and isinstance(args[0], Move) else None,
             "history_length": len(context.get("moves", ())), "depth": self.config.engine.depth,
             "movetime_ms": self.config.engine.movetime_ms,
+            "limit_strength": self.config.engine.limit_strength,
+            "target_elo": self.config.engine.target_elo,
         }
         with self._lock:
             self._engine_history.append(record)
@@ -1815,11 +1510,11 @@ class GameService:
                 analysis = getattr(self.engine, 'last_analysis', None)
                 if analysis is not None and operation == 'suggest':
                     terminal['ponder'] = analysis.ponder
-                    terminal['lines'] = [self._serialize_analysis_line(line, side) for line in analysis.lines]
+                    terminal['lines'] = [serialize_analysis_line(line, side) for line in analysis.lines]
             elif hasattr(result, "lines"):
                 terminal["bestmove"] = result.bestmove.uci if result.bestmove else None
                 terminal["ponder"] = result.ponder
-                terminal["lines"] = [self._serialize_analysis_line(line, side) for line in result.lines]
+                terminal["lines"] = [serialize_analysis_line(line, side) for line in result.lines]
             else:
                 terminal["result"] = result
             return result
@@ -1868,28 +1563,53 @@ class GameService:
     def _start_current(self, payload: tuple[str, str]) -> None:
         self._guard_running()
         result = self._capture("以目前棋盤建立對局")
+        candidate = clone_board(result.board)
+        validate_pawn_positions(candidate)
+        side = self._side_to_move
+        # A structurally plausible observation is not yet an accepted game
+        # baseline.  Let Pikafish parse and search the position first so an
+        # engine-rejected board can never become the persisted source of truth.
+        has_legal_move = self._query_engine(
+            "has_legal_move",
+            candidate,
+            side,
+            initial_board=candidate,
+            initial_side=side,
+            moves=(),
+        )
+        self._guard_running()
         with self._lock:
             self._guard_running()
-            validate_pawn_positions(result.board)
-            self._board = clone_board(result.board)
+            self._board = candidate
             self._initial_board = clone_board(self._board)
             self._accept_observation(self._board, 'accepted_initial_baseline')
             self._last_observed = None
             self._persist_session()
-        if self._controllers.get(self._side_to_move) == "human":
-            if not self._query_engine("has_legal_move",
-                self._board, self._side_to_move, **self._engine_context()
-            ):
-                self._update_running(lambda state: state.update(
-                    phase=Phase.FINISHED.value,
-                    current_turn=None,
-                    message=(f"{self._side_label(self._side_to_move)}無合法著法，{self._side_label(self._other_side(self._side_to_move))}獲勝。"
-                             if self._game_mode == "analysis" else "目前局面玩家無合法著法，AI 獲勝。"),
-                    error=None,
-                ))
-                self._persist_session()
-                return
-            self._enter_player_turn(f"目前棋盤已建立為新基準，輪到{self._side_label(self._side_to_move)}。")
+        controller = self._controllers.get(side)
+        if not has_legal_move:
+            winner_side = self._other_side(side)
+            if controller == "human":
+                message = (
+                    f"{self._side_label(side)}無合法著法，{self._side_label(winner_side)}獲勝。"
+                    if self._game_mode == "analysis"
+                    else "目前局面玩家無合法著法，AI 獲勝。"
+                )
+            else:
+                message = (
+                    "AI 無合法著法，玩家獲勝。"
+                    if self._controllers.get(winner_side) == "human"
+                    else f"{self._side_label(side)}無合法著法，{self._side_label(winner_side)}獲勝。"
+                )
+            self._update_running(lambda state: state.update(
+                phase=Phase.FINISHED.value,
+                current_turn=None,
+                message=message,
+                error=None,
+            ))
+            self._persist_session()
+            return
+        if controller == "human":
+            self._enter_player_turn(f"目前棋盤已建立為新基準，輪到{self._side_label(side)}。")
             self._persist_session()
             return
         self._perform_ai_turn()
@@ -1949,9 +1669,9 @@ class GameService:
         if persisted_match is not None and requested_side != self._side_to_move:
             raise VerificationError("盤面沒有新增著法，但所選回合與保存歷史不符；請依保存回合續局。", result.board)
         if self._controllers.get(requested_side) == "human":
-            if requested_side != self._side_to_move:
+            if requested_side != self._side_to_move and persisted_match is not None:
                 raise VerificationError("不能略過保存的引擎回合；請依保存回合續局。", result.board)
-            if persisted_match is None:
+            if requested_side == self._side_to_move and persisted_match is None:
                 difference_count = sum(
                     expected_piece != observed_piece
                     for expected_row, observed_row in zip(self._board, result.board)
@@ -1962,10 +1682,11 @@ class GameService:
                     "若要保留現場盤面，請改選「從目前棋盤開始」。",
                     result.board,
                 )
-            self._log_temporal_repairs("恢復玩家回合", persisted_match[1])
-            self._enter_player_turn("上一局盤面核對完成，輪到玩家。")
-            self._persist_session()
-            return
+            if persisted_match is not None:
+                self._log_temporal_repairs("恢復玩家回合", persisted_match[1])
+                self._enter_player_turn("上一局盤面核對完成，輪到玩家。")
+                self._persist_session()
+                return
 
         if persisted_match is not None:
             self._log_temporal_repairs("恢復 AI 回合", persisted_match[1])
@@ -2007,7 +1728,13 @@ class GameService:
                 repaired_cells=repaired,
             ), side_to_move=self._side_to_move))
             self._persist_session()
-        self._perform_ai_turn()
+        if self._controllers.get(self._side_to_move) == "engine":
+            self._perform_ai_turn()
+        else:
+            self._enter_player_turn(
+                f"恢復時已確認上一手，輪到{self._side_label(self._side_to_move)}。"
+            )
+            self._persist_session()
 
     def _player_done(self) -> None:
         if self._board is None:
@@ -2073,7 +1800,7 @@ class GameService:
             side=side,
             bestmove=self._serialize_move(analysis.bestmove),
             ponder=analysis.ponder,
-            lines=[self._serialize_analysis_line(line, side) for line in analysis.lines],
+            lines=[serialize_analysis_line(line, side) for line in analysis.lines],
             updated_at=utc_now(),
             error=None,
         ))
@@ -2441,23 +2168,6 @@ class GameService:
                 [position_to_uci(position) for position in repaired],
             )
 
-    def _position_details(self, position: Position) -> dict[str, Any]:
-        col, row = position
-        player_row = 9 - row
-        player_col = 8 - col
-        point_offset = player_col if player_row % 2 == 0 else 8 - player_col
-        x, y = self.config.motion.board_xy_matrix()[row][col]
-        return {
-            "col": col,
-            "row": row,
-            "board_text": position_to_uci(position),
-            "matrix": f"R{row + 1}C{col + 1}",
-            "player_matrix": f"R{player_row + 1}C{player_col + 1}",
-            "player_point": player_row * 9 + point_offset + 1,
-            "robot_x": round(x, 3),
-            "robot_y": round(y, 3),
-        }
-
     def _move_payload(
         self,
         actor: str,
@@ -2469,114 +2179,40 @@ class GameService:
         repaired_cells: list[Position] | None = None,
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        side = side or (self._player_side if actor == "player" else self._ai_side)
-        other_side = "b" if side == "w" else "w"
-        sequence = len(self._move_history) + 1
-        image_verified = (extra or {}).get("confirmation_method") != "motion_completed"
-        capture = (self._last_capture_record or {}) if image_verified else {}
-        fen_error = None
-        try:
-            fen_before = board_to_fen(before, side)
-            fen_after = board_to_fen(after, other_side)
-        except ValueError as exc:
-            # Operational recording must never turn a pre-existing board
-            # validation issue into a new robot-workflow failure.
-            fen_before = fen_after = None
-            fen_error = str(exc)
-        payload = {
-            "actor": actor,
-            "side": side,
-            "round": (sequence + 1) // 2,
-            "uci": move.uci,
-            "source": list(move.source),
-            "destination": list(move.destination),
-            "source_position": self._position_details(move.source),
-            "destination_position": self._position_details(move.destination),
-            "captured": bool(move.captured_piece),
-            "captured_piece_id": move.captured_piece,
-            "fen_before": fen_before,
-            "fen_after": fen_after,
-            "fen_error": fen_error,
-            "capture_id": capture.get("capture_id"),
-            "capture_seconds": capture.get("capture_seconds"),
-            "vision_processing_seconds": capture.get("processing_seconds"),
-            "vision_total_seconds": capture.get("total_seconds"),
-            "vision_repaired_cells": [
-                position_to_uci(item) for item in (repaired_cells or [])
-            ],
-            "committed_at": utc_now(),
-        }
-        if extra:
-            payload.update(extra)
-            if "repaired_cells" in extra and not payload["vision_repaired_cells"]:
-                payload["vision_repaired_cells"] = list(extra["repaired_cells"])
-        if payload.get("legality_seconds") is None:
-            check = next((q for q in reversed(self._engine_history)
-                          if q.get("operation") == "is_legal" and q.get("requested_move") == move.uci
-                          and q.get("status") == "completed"), {})
-            payload["legality_seconds"] = check.get("duration_seconds")
-        if actor == "player" and payload.get("turn_seconds") is None and capture.get("started_at"):
-            payload["turn_seconds"] = round((datetime.now(timezone.utc) - datetime.fromisoformat(capture["started_at"])).total_seconds(), 3)
-        payload.setdefault("move_attempt_id", f"{self._game_id}:{sequence}")
-        if image_verified and self._last_capture_record is not None:
-            self._last_capture_record.update(accepted_board=clone_board(after), accepted_move_sequence=sequence,
-                                             accepted_uci=move.uci, acceptance_status="committed")
-        return payload
+        return self._journal.move_payload(
+            self.config.motion,
+            actor,
+            move,
+            before,
+            after,
+            player_side=self._player_side,
+            ai_side=self._ai_side,
+            game_id=self._game_id,
+            last_capture_record=self._last_capture_record,
+            side=side,
+            repaired_cells=repaired_cells,
+            extra=extra,
+        )
+
+    def _position_details(self, position: Position) -> dict[str, Any]:
+        """Compatibility shim for diagnostics that inspect mapped positions."""
+        return position_details(self.config.motion, position)
 
     def _new_motion_record(self, retry_pick: bool, started_at: str) -> dict[str, Any]:
         assert self._pending_move is not None
-        source = self._position_details(self._pending_move.source)
-        destination = self._position_details(self._pending_move.destination)
-        return {
-            "sequence": len(self._motion_history) + 1,
-            "round": self._current_round(),
-            "move_uci": self._pending_move.uci,
-            "move_attempt_id": self._pending_metrics.get("move_attempt_id"),
-            "verification_status": "pending", "committed_move_sequence": None,
-            "retry": retry_pick,
-            "status": "moving",
-            "started_at": started_at,
-            "completed_at": None,
-            "duration_seconds": None,
-            "source": source,
-            "destination": destination,
-            "target_x": destination["robot_x"],
-            "target_y": destination["robot_y"],
-            "target_z": self.config.motion.z_safe,
-            "actual_x": None,
-            "actual_y": None,
-            "actual_z": None,
-            "position_error_mm": None,
-            "orientation_error_deg": None,
-            "graveyard_x": None,
-            "graveyard_y": None,
-            "error_type": None,
-            "error_message": None,
-        }
+        return self._journal.new_motion_record(
+            self.config.motion,
+            self._pending_move,
+            self._pending_metrics,
+            retry_pick,
+            started_at,
+        )
 
     def _complete_motion_record(self, record: dict[str, Any]) -> None:
-        # Successful adapters report the landing pose before their standby return.
         if record.get("position_error_mm") is not None:
             return
         pose = self.store.snapshot().get("robot", {}).get("pose")
-        if not isinstance(pose, dict):
-            return
-        actual = tuple(pose.get(key) for key in ("x", "y", "z"))
-        target = tuple(record.get(key) for key in ("target_x", "target_y", "target_z"))
-        if all(isinstance(value, (int, float)) for value in (*actual, *target)):
-            record.update(
-                actual_x=actual[0],
-                actual_y=actual[1],
-                actual_z=actual[2],
-                position_error_mm=round(sum((a - b) ** 2 for a, b in zip(actual, target)) ** 0.5, 4),
-            )
-        orientation = self.config.motion.orientation_rxyz
-        if orientation is not None and all(isinstance(pose.get(key), (int, float)) for key in ("rx", "ry", "rz")):
-            errors = [
-                abs((float(pose[key]) - target_angle + 180.0) % 360.0 - 180.0)
-                for key, target_angle in zip(("rx", "ry", "rz"), orientation)
-            ]
-            record["orientation_error_deg"] = round(max(errors), 4)
+        complete_motion_record(record, pose, self.config.motion.orientation_rxyz)
 
     def _enter_player_turn(self, message: str) -> None:
         self._update_running(lambda state: state.update(

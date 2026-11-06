@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--allow-below-configured-safe-z",
         action="store_true",
-        help="允許以 Z=380 跨點；此高度低於正式 Z_SAFE=525",
+        help="相容舊版參數；只有巡檢跨點高度低於目前設定 Z_SAFE 時才需要",
     )
     parser.add_argument("--start-point", type=int, default=1, help="起始序號，1–90")
     parser.add_argument("--end-point", type=int, default=90, help="結束序號，1–90")
@@ -59,7 +59,7 @@ def main() -> int:
         print(f"{point.label}: X={point.x:.3f}, Y={point.y:.3f}")
     if not args.execute:
         print("\n乾跑完成：未連接機械手臂，也未送出移動命令。")
-        print("建議先執行單點：--execute --start-point 1 --end-point 1 --allow-below-configured-safe-z")
+        print("建議先執行單點：--execute --start-point 1 --end-point 1 --step-confirm")
         return 0
 
     if not CONFIG.safety.hardware_enabled:

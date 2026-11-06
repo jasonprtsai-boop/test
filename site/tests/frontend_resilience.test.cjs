@@ -117,6 +117,47 @@ test('player releases buttons after command and refresh fail; stop bypasses pend
   assert.equal(element('#errorBox').textContent, 'command timeout');
 });
 
+test('player applies a validated Elo target through the dedicated endpoint', async () => {
+  const elements = new Map();
+  const element = selector => {
+    if (!elements.has(selector)) elements.set(selector, {
+      addEventListener(type, fn) {this[type] = fn;},
+      reportValidity() {return true;},
+      hidden: false, disabled: false, value: '', textContent: '',
+    });
+    return elements.get(selector);
+  };
+  const state = {
+    phase: 'IDLE', first_actor: null, side_to_move: 'w', controllers: {w: 'human', b: 'engine'},
+    controls: {can_start: true, can_start_current: true},
+    preflight: {ready: true, checks: []}, analysis: {status: 'idle'},
+    engine_limit_strength: true, engine_target_elo: 1600, engine_depth: 2, engine_movetime_ms: 500,
+  };
+  const requests = [];
+  const context = vm.createContext({
+    document: {querySelector: element, querySelectorAll: () => []}, window: {},
+    TMChess: {
+      newestState: (_previous, incoming) => incoming,
+      connect: render => render(state),
+      request: async (url, options) => {
+        requests.push({url, options});
+        return {target_elo: JSON.parse(options.body).target_elo};
+      },
+    },
+  });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../static/player.js'), 'utf8'), context);
+  element('#engineElo').value = '1800';
+
+  await element('#applyElo').click();
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, '/api/engine/elo');
+  assert.equal(JSON.parse(requests[0].options.body).target_elo, 1800);
+  assert.equal(element('#eloStatus').textContent, '已套用目標 1800 Elo；下次搜尋生效。');
+  assert.equal(element('#engineStrengthStatus').textContent, 'AI 棋力限制已啟用：目標 1800 Elo。');
+  assert.equal(element('#applyElo').disabled, false);
+});
+
 test('late command responses cannot roll back the rendered state', () => {
   const {api} = runtime(async () => {});
   const current = {instance_id: 'server-a', revision: 12, phase: 'STOPPED'};

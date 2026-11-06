@@ -12,6 +12,7 @@ from unittest.mock import patch, Mock
 from tmchess.board import Move
 from tmchess.config import CONFIG, SITE_ROOT
 from tmchess.robot import HardwareLease, GripperStateUnknown, ListenModeUnavailable, StopRequested, TMRobotAdapter
+from tmchess.robot_protocol import RobotProtocolError, encode_frame
 from tmchess.service import PreflightChecker
 from tests.fakes import FakeEngine, FakePreflight, FakeRobot, FakeVision
 
@@ -85,7 +86,7 @@ class RobotProtocolTests(unittest.TestCase):
     def test_gripper_ack_does_not_claim_physical_suction(self):
         adapter = TMRobotAdapter(CONFIG.network, CONFIG.motion)
         sock = Mock()
-        sock.recv.return_value = b"DO00001,OK"
+        sock.recv.return_value = encode_frame("TMSCT", b"DO00001,OK")
         with self.assertLogs("tmchess.robot", level="INFO") as captured:
             adapter._set_gripper(sock, True)
         self.assertTrue(adapter._last_gripper_ack)
@@ -290,7 +291,7 @@ class RobotProtocolTests(unittest.TestCase):
     def test_parse_binary_tmsta_pose(self):
         expected = (1.25, -2.5, 300.0, 4.0, 5.0, 6.0)
         payload = b"90," + struct.pack("<6f", *expected)
-        packet = b"noise$TMSTA," + str(len(payload)).encode() + b"," + payload + b",*00\r\n"
+        packet = encode_frame("TMSTA", payload)
         actual = TMRobotAdapter.parse_pose_packet(packet)
         self.assertIsNotNone(actual)
         for left, right in zip(expected, actual):
@@ -298,13 +299,46 @@ class RobotProtocolTests(unittest.TestCase):
 
     def test_pose_parser_ignores_wrong_data_id(self):
         payload = b"91," + struct.pack("<6f", 1, 2, 3, 4, 5, 6)
-        packet = b"$TMSTA," + str(len(payload)).encode() + b"," + payload
+        packet = encode_frame("TMSTA", payload)
         self.assertIsNone(TMRobotAdapter.parse_pose_packet(packet))
+
+    def test_protocol_rejects_unframed_ack(self):
+        adapter = TMRobotAdapter(CONFIG.network, CONFIG.motion)
+        sock = Mock()
+        sock.recv.return_value = b"junk DO00001,OK junk"
+        with self.assertRaisesRegex(RobotProtocolError, "合法 frame 起點"):
+            adapter._send_script(sock, "test command", "DO")
+
+    def test_protocol_rejects_wrong_checksum(self):
+        adapter = TMRobotAdapter(CONFIG.network, CONFIG.motion)
+        packet = encode_frame("TMSCT", b"DO00001,OK")
+        wrong = b"FF" if packet[-4:-2] != b"FF" else b"00"
+        sock = Mock()
+        sock.recv.return_value = packet[:-4] + wrong + b"\r\n"
+        with self.assertRaisesRegex(RobotProtocolError, "checksum 不符"):
+            adapter._send_script(sock, "test command", "DO")
+
+    def test_protocol_accepts_fragmented_ack(self):
+        adapter = TMRobotAdapter(CONFIG.network, CONFIG.motion)
+        packet = encode_frame("TMSCT", b"DO00001,OK")
+        sock = Mock()
+        sock.recv.side_effect = [packet[:9], packet[9:]]
+        self.assertEqual(adapter._send_script(sock, "test command", "DO"), packet)
+
+    def test_pose_accepts_concatenated_valid_frames(self):
+        expected = (1.25, -2.5, 300.0, 4.0, 5.0, 6.0)
+        pose_frame = encode_frame("TMSTA", b"90," + struct.pack("<6f", *expected))
+        ack_frame = encode_frame("TMSCT", b"POS00001,OK")
+        sock = Mock()
+        sock.recv.return_value = pose_frame + ack_frame
+        actual = TMRobotAdapter(CONFIG.network, CONFIG.motion)._read_pose(sock)
+        for left, right in zip(expected, actual):
+            self.assertAlmostEqual(left, right, places=4)
 
     def test_f1_is_classified_as_listen_mode_unavailable(self):
         class FakeSocket:
             def sendall(self, _packet): pass
-            def recv(self, _size): return b"$CPERR,2,F1,*3F\r\n"
+            def recv(self, _size): return encode_frame("CPERR", b"F1")
 
         adapter = TMRobotAdapter(CONFIG.network, CONFIG.motion)
         with self.assertRaisesRegex(ListenModeUnavailable, "尚未進入 Listen"):

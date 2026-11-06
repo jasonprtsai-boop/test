@@ -493,12 +493,22 @@ class GameRecordWriter:
         row += 1
         setting_rows = [
             ("執行模式", "真機" if hardware_enabled is True else "未啟用" if hardware_enabled is False else "未記錄"),
+            ("Pikafish 棋力限制", "啟用" if settings.get("engine_limit_strength") is True else "未啟用" if settings.get("engine_limit_strength") is False else "未記錄"),
+            ("Pikafish 目標 Elo", settings.get("engine_target_elo")),
             ("Pikafish 深度", settings.get("engine_depth")),
             ("Pikafish 思考時間（ms）", settings.get("engine_movetime_ms")),
             ("Robot Base / TCP", f"{settings.get('base_name', '—')} / {settings.get('tcp_name', '—')}"),
             ("移動速度 / 加速度", f"{settings.get('speed', '—')} / {settings.get('acceleration', '—')}"),
             ("Z_SAFE / Z_APPROACH / Z_PICK", f"{settings.get('z_safe', '—')} / {settings.get('z_approach', '—')} / {settings.get('z_pick', '—')}"),
             ("影像信心門檻", settings.get("vision_confidence")),
+            ("程式 commit", settings.get("revision") or "未記錄"),
+            ("Tracked worktree dirty", "是" if settings.get("tracked_worktree_dirty") is True else "否" if settings.get("tracked_worktree_dirty") is False else "未知"),
+            ("Python 版本", settings.get("python_version") or "未記錄"),
+            ("requirements.lock SHA256", settings.get("requirements_lock_sha256") or "未記錄"),
+            ("release manifest SHA256", settings.get("release_manifest_sha256") or "未記錄"),
+            ("YOLO model SHA256", settings.get("yolo_model_sha256") or "未記錄"),
+            ("Pikafish executable SHA256", settings.get("pikafish_executable_sha256") or "未記錄"),
+            ("Pikafish NNUE SHA256", settings.get("pikafish_nnue_sha256") or "未記錄"),
         ]
         for label, value in setting_rows:
             sheet.cell(row, 1, label)

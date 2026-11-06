@@ -35,6 +35,14 @@ class FakePreflight:
         if not self.base_tcp:
             raise RuntimeError("base/tcp mismatch")
 
+    def disk_space_check(self):
+        return {
+            "key": "disk_space",
+            "label": "執行資料磁碟空間",
+            "ok": self.ready,
+            "detail": "測試磁碟空間",
+        }
+
 
 class FakeEngine:
     def __init__(self, suggestions=None, legal=True, error=None, has_legal=True, analysis=None):
@@ -48,6 +56,11 @@ class FakeEngine:
         self.legal_calls = 0
         self.has_legal_calls = 0
         self.contexts = []
+        self.config_updates = []
+
+    def update_config(self, config):
+        self.config = config
+        self.config_updates.append(config)
 
     def start(self):
         if self.error == "start":
@@ -182,6 +195,7 @@ def make_service(
     config=CONFIG,
     session_store=None,
     record_writer=None,
+    preflight_checker=None,
 ):
     vision = FakeVision(outcomes, blocker=blocker)
     engine = FakeEngine(
@@ -190,7 +204,8 @@ def make_service(
     robot = robot or FakeRobot()
     service = GameService(
         config, robot, vision, engine,
-        preflight_checker=FakePreflight(True), start_preflight_monitor=False,
+        preflight_checker=preflight_checker or FakePreflight(True),
+        start_preflight_monitor=False,
         session_store=session_store,
         record_writer=record_writer,
     )

@@ -15,6 +15,8 @@ test/
 │  ├─ requirements*.txt       套件需求
 │  ├─ requirements.lock       鎖定版本
 │  ├─ tmchess/                對局、視覺、機械、保存核心
+│  │  ├─ service.py           唯一即時工作流、盤面狀態與硬體命令佇列
+│  │  └─ workflow_journal.py  稽核歷史與紀錄 payload 組裝，不控制硬體
 │  ├─ templates/、static/     網頁與靜態資源
 │  ├─ tests/、tools/          回歸測試與維護工具
 │  ├─ *.md                    操作、架構、研究與歷史決策

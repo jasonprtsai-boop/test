@@ -229,3 +229,12 @@ footer { width: min(1240px, calc(100% - 48px)); min-height: 82px; margin: 0 auto
   .button { transition: none; }
   .button:hover:not(:disabled) { transform: none; }
 }
+
+/* Progressive disclosure and keyboard navigation. */
+.advanced-settings { margin-bottom: 24px; border-bottom: 1px solid #c6cec8; padding-bottom: 16px; }
+.advanced-settings summary { cursor: pointer; padding: 12px 0; font-weight: 700; }
+:focus-visible { outline: 3px solid #176c91; outline-offset: 4px; }
+.setup-message, .error-box, .method-note { overflow-wrap: anywhere; }
+
+.control-panel input.full, .control-panel select.full { display: block; width: 100%; min-height: 44px; margin-block: 8px 16px; padding: 10px 12px; border: 1px solid #8ba89c; border-radius: 8px; background: #fff; color: #173c30; font: inherit; }
+.control-panel label[for] { display: block; margin-top: 16px; font-weight: 600; }

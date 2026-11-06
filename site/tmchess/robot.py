@@ -9,7 +9,6 @@ from __future__ import annotations
 import itertools
 import logging
 import math
-import os
 import random
 import socket
 import struct
@@ -17,11 +16,12 @@ import threading
 import time
 from functools import wraps
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable
 
 from .board import Move, Position
 from .config import SITE_ROOT, MotionConfig, NetworkConfig
+from .hardware_lease import HardwareLease
+from .robot_protocol import RobotFrame, RobotProtocolError, decode_frames, encode_frame
 
 Pose = tuple[float, float, float, float, float, float]
 LOGGER = logging.getLogger(__name__)
@@ -63,60 +63,6 @@ class ListenModeUnavailable(RuntimeError):
     """The controller accepted TCP but TMflow is not at a Listen node."""
 
 
-class HardwareLease:
-    """Process-wide file lease preventing two new adapters using one robot.
-
-    Legacy experimental scripts outside ``site`` do not participate in this
-    lease and must still be kept closed while the website is running.
-    """
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self._file = None
-
-    def acquire(self) -> None:
-        if self._file is not None:
-            return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle = self.path.open("a+b")
-        if handle.seek(0, os.SEEK_END) == 0:
-            handle.write(b"\0")
-            handle.flush()
-        handle.seek(0)
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            handle.close()
-            raise RuntimeError(
-                "另一個網站或點位工具正在使用 TM5-700；請先關閉另一個程序。"
-            ) from exc
-        self._file = handle
-
-    def release(self) -> None:
-        handle, self._file = self._file, None
-        if handle is None:
-            return
-        try:
-            handle.seek(0)
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        finally:
-            handle.close()
-
-
 @dataclass(frozen=True)
 class RobotCallbacks:
     pose: Callable[[Pose], None] = lambda _pose: None
@@ -145,11 +91,7 @@ class TMRobotAdapter:
     @staticmethod
     def make_packet(script_id: str, script: str) -> bytes:
         payload = f"{script_id},{script}".encode("utf-8")
-        body = b"TMSCT," + str(len(payload)).encode("ascii") + b"," + payload + b","
-        checksum = 0
-        for value in body:
-            checksum ^= value
-        return b"$" + body + b"*" + f"{checksum:02X}".encode("ascii") + b"\r\n"
+        return encode_frame("TMSCT", payload)
 
     def _script_id(self, prefix: str) -> str:
         return f"{prefix}{next(self._ids) % 100000:05d}"
@@ -185,13 +127,27 @@ class TMRobotAdapter:
         return sock
 
     @staticmethod
-    def _raise_protocol_error(buffer: bytes, script: str) -> None:
-        if b"$CPERR,2,F1," in buffer:
+    def _raise_controller_error(frame: RobotFrame, script: str) -> None:
+        if frame.header != "CPERR":
+            return
+        if frame.payload == b"F1" or frame.payload.startswith(b"F1,"):
             raise ListenModeUnavailable(
                 f"TMflow 尚未進入 Listen 節點，指令未執行：{script}"
             )
-        if b"$CPERR," in buffer:
-            raise RuntimeError(f"Robot 通訊協定錯誤（指令：{script}）：{buffer!r}")
+        raise RuntimeError(f"Robot 通訊協定錯誤（指令：{script}）：{frame.raw!r}")
+
+    @staticmethod
+    def _acknowledges(frame: RobotFrame, script_id: str, script: str) -> bool:
+        if frame.header != "TMSCT":
+            return False
+        response_id, separator, status = frame.payload.partition(b",")
+        if not separator or response_id != script_id.encode("ascii"):
+            return False
+        if status == b"OK" or status.startswith(b"OK;"):
+            return True
+        if status == b"ERROR" or status.startswith(b"ERROR;"):
+            raise RuntimeError(f"Robot 拒絕指令（{script_id}，{script}）：{status.decode('ascii', 'replace')}")
+        raise RobotProtocolError(f"Robot 指令回覆狀態無效（{script_id}）：{status!r}")
 
     @traced_robot_io
     def _send_script(self, sock: socket.socket, script: str, prefix: str) -> bytes:
@@ -199,7 +155,6 @@ class TMRobotAdapter:
         LOGGER.info("[ROBOT_DIAG] send_attempt id=%s script=%s", script_id, script)
         sock.sendall(self.make_packet(script_id, script))
         LOGGER.info("[ROBOT_DIAG] sent id=%s awaiting=controller_ack", script_id)
-        expected = f"{script_id},OK".encode("ascii")
         deadline = time.monotonic() + self.motion.socket_timeout_seconds
         buffer = b""
         while time.monotonic() < deadline:
@@ -211,40 +166,32 @@ class TMRobotAdapter:
                 raise ConnectionError(f"Robot 已關閉 Listen 連線（等待指令回覆：{script}）。")
             buffer += data
             LOGGER.info("[ROBOT_DIAG] received id=%s bytes=%s tail=%r", script_id, len(data), data[-512:])
-            self._raise_protocol_error(buffer, script)
-            if expected in buffer:
-                LOGGER.info("[ROBOT_DIAG] command_ack id=%s physical_completion=unconfirmed", script_id)
-                return buffer
+            frames, buffer = decode_frames(buffer)
+            for frame in frames:
+                self._raise_controller_error(frame, script)
+                if self._acknowledges(frame, script_id, script):
+                    LOGGER.info("[ROBOT_DIAG] command_ack id=%s physical_completion=unconfirmed", script_id)
+                    return frame.raw
         raise TimeoutError(f"等待 Robot 回覆逾時：{script}")
 
     @staticmethod
     def parse_pose_packet(buffer: bytes) -> Pose | None:
-        marker = b"$TMSTA,"
-        start = buffer.find(marker)
-        while start >= 0:
-            length_start = start + len(marker)
-            length_end = buffer.find(b",", length_start)
-            if length_end < 0:
-                return None
-            try:
-                payload_length = int(buffer[length_start:length_end])
-            except ValueError:
-                start = buffer.find(marker, start + 1)
-                continue
-            payload_start = length_end + 1
-            payload_end = payload_start + payload_length
-            if len(buffer) < payload_end:
-                return None
-            payload = buffer[payload_start:payload_end]
-            if payload.startswith(b"90,") and len(payload) >= 27:
-                try:
-                    pose = tuple(float(value) for value in struct.unpack("<6f", payload[3:27]))
-                except struct.error:
-                    return None
-                if all(math.isfinite(value) for value in pose):
-                    return pose  # type: ignore[return-value]
-            start = buffer.find(marker, start + 1)
+        frames, _remaining = decode_frames(buffer)
+        for frame in frames:
+            pose = TMRobotAdapter._pose_from_frame(frame)
+            if pose is not None:
+                return pose
         return None
+
+    @staticmethod
+    def _pose_from_frame(frame: RobotFrame) -> Pose | None:
+        if frame.header != "TMSTA" or len(frame.payload) != 27 or not frame.payload.startswith(b"90,"):
+            return None
+        try:
+            pose = tuple(float(value) for value in struct.unpack("<6f", frame.payload[3:]))
+        except struct.error:
+            return None
+        return pose if all(math.isfinite(value) for value in pose) else None  # type: ignore[return-value]
 
     @traced_robot_io
     def _read_pose(self, sock: socket.socket) -> Pose:
@@ -252,10 +199,10 @@ class TMRobotAdapter:
         script = "ListenSend(90,Robot[0].CoordRobot)"
         LOGGER.info("[ROBOT_DIAG] pose_request id=%s", script_id)
         sock.sendall(self.make_packet(script_id, script))
-        expected = f"{script_id},OK".encode("ascii")
         deadline = time.monotonic() + self.motion.socket_timeout_seconds
         buffer = b""
         pose: Pose | None = None
+        acknowledged = False
         while time.monotonic() < deadline:
             try:
                 data = sock.recv(4096)
@@ -265,9 +212,12 @@ class TMRobotAdapter:
                 raise ConnectionError("Robot 已關閉 Listen 連線（等待 Pose 回覆）。")
             buffer += data
             LOGGER.info("[ROBOT_DIAG] pose_received id=%s bytes=%s tail=%r", script_id, len(data), data[-128:])
-            self._raise_protocol_error(buffer, script)
-            pose = pose or self.parse_pose_packet(buffer)
-            if pose is not None and expected in buffer:
+            frames, buffer = decode_frames(buffer)
+            for frame in frames:
+                self._raise_controller_error(frame, script)
+                pose = pose or self._pose_from_frame(frame)
+                acknowledged = acknowledged or self._acknowledges(frame, script_id, script)
+            if pose is not None and acknowledged:
                 self._last_pose = pose
                 self._last_pose_at = time.monotonic()
                 LOGGER.info("[ROBOT_DIAG] pose_confirmed id=%s pose=%s", script_id, pose)
@@ -276,7 +226,7 @@ class TMRobotAdapter:
         missing = []
         if pose is None:
             missing.append("TMSTA Pose")
-        if expected not in buffer:
+        if not acknowledged:
             missing.append(f"{script_id} OK")
         raise TimeoutError(f"無法完整取得 Robot Pose，缺少：{', '.join(missing)}")
 

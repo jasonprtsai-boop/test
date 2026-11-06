@@ -484,6 +484,23 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(preflight.calls, [False, True])
         self.assertTrue(self.service.get_state()["preflight"]["ready"])
 
+    def test_disk_space_is_rechecked_after_preflight_completed(self):
+        preflight = FakePreflight(True)
+        self.service, *_ = make_service([], preflight_checker=preflight)
+
+        self.assertTrue(self.service.get_state()["controls"]["can_start"])
+        preflight.ready = False
+        self.service._last_disk_check_at = 0.0
+        low = self.service.get_state()
+        self.assertFalse(low["preflight"]["ready"])
+        self.assertFalse(low["controls"]["can_start"])
+
+        preflight.ready = True
+        self.service._last_disk_check_at = 0.0
+        recovered = self.service.get_state()
+        self.assertTrue(recovered["preflight"]["ready"])
+        self.assertTrue(recovered["controls"]["can_start"])
+
     def test_close_waits_for_preflight_before_releasing_robot(self):
         entered = threading.Event()
         release = threading.Event()

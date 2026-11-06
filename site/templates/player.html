@@ -7,16 +7,32 @@
 
 <section class="section-shell player-layout">
   <article class="panel control-panel">
-    <section>
+    <details class="advanced-settings">
+      <summary>進階 AI 設定</summary>
+      <p id="engineStrengthStatus" class="setup-message" role="status">正在讀取 AI 棋力設定…</p>
+      <label for="engineElo">AI 目標 Elo</label>
+      <input id="engineElo" type="number" min="1280" max="3133" step="1" required value="1600" class="full" list="engineEloPresets">
+      <datalist id="engineEloPresets">
+        <option value="1280" label="入門"></option>
+        <option value="1400"></option>
+        <option value="1600"></option>
+        <option value="1800"></option>
+        <option value="2000"></option>
+        <option value="2400"></option>
+        <option value="2800"></option>
+        <option value="3133" label="最高"></option>
+      </datalist>
+      <button id="applyElo" type="button" class="button full">套用 Elo</button>
+      <p id="eloStatus" class="setup-message" role="status">可設定 1280–3133；下次搜尋生效。這是 Pikafish 的目標棋力，不是對真人等級的保證。</p>
       <label for="engineDepth">AI 搜尋深度</label>
-      <input id="engineDepth" type="number" min="1" max="30" step="1" required value="2" class="full">
+      <input id="engineDepth" type="number" min="1" max="30" step="1" required value="5" class="full">
       <button id="applyDepth" type="button" class="button full">套用搜尋深度</button>
       <p id="depthStatus" class="setup-message" role="status">可設定 1–30；下次搜尋生效。時間先達上限時，實際深度可能較低；重啟恢復預設。</p>
       <label for="engineMovetime">AI 思考時間上限（毫秒）</label>
       <input id="engineMovetime" type="number" min="100" max="10000" step="1" required value="500" class="full">
       <button id="applyMovetime" type="button" class="button full">套用思考時間</button>
       <p id="movetimeStatus" class="setup-message" role="status">100–10000 毫秒；下次搜尋生效。達到深度上限會提早結束；重啟恢復預設。</p>
-    </section>
+    </details>
     <div id="setupSection">
       <div id="lastResultSection" class="safety-banner ready" role="status" aria-live="polite" hidden>
         <span id="lastResultMessage"></span>
@@ -39,13 +55,13 @@
         </select>
         <p class="setup-message">辨識失敗請先選恢復。重新建立基準會保留同場關聯，並標示無法確認的中間棋步；只有全新對戰才另計一場。</p>
         <div class="panel-kicker">CURRENT BOARD</div>
-        <h2>偵測目前棋盤</h2>
-        <p class="status-message">重新拍攝雙視角；優先核對棋譜並接續同一場對戰。</p>
+        <h2>辨識並恢復對局</h2>
+        <p class="status-message">重新拍攝雙視角並接續流程。若恢復至 AI 回合，可能接續機械動作；操作前請確認棋盤周圍安全。</p>
         <div class="choice-grid choice-grid-spaced" role="radiogroup" aria-label="選擇目前回合">
           <label><input type="radio" name="currentBoardActor" value="player" checked><span><b id="currentRedLabel">輪到玩家（紅方）</b><small>以紅方作為目前行棋方</small></span></label>
           <label><input type="radio" name="currentBoardActor" value="ai"><span><b id="currentBlackLabel">輪到機械手臂（黑方）</b><small>以黑方作為目前行棋方</small></span></label>
         </div>
-        <button id="currentBoardButton" class="button secondary full" type="button" disabled>偵測目前棋盤</button>
+        <button id="currentBoardButton" class="button secondary full" type="button" disabled>辨識並恢復對局</button>
         <p class="setup-message">恢復時沿用保存的模式、行棋方與 Excel；全新對戰或重建基準才使用所選模式與回合。AI 對 AI 每步須確認；雙人分析由人走棋。</p>
         <div class="divider"></div>
       </div>
@@ -84,7 +100,7 @@
         <button id="resignButton" class="button" type="button" disabled>認輸</button>
         <button id="drawButton" class="button" type="button" disabled>現場判和</button>
       </div>
-      <p class="player-safety-note">落子完成後不再拍照核對。若吸取或放置失敗，請停止流程，從現場盤面重新建立對局；棋盤取放高度固定為 Z=288，重試不會繼續下降。如有危險，請使用控制器上的實體 Emergency Stop。</p>
+      <p class="player-safety-note">落子完成後不再拍照核對。若吸取或放置失敗，請停止流程，使用「辨識並恢復對局」核對；無法恢復時才重建同場基準；棋盤取放高度固定為 Z=288，重試不會繼續下降。如有危險，請使用控制器上的實體 Emergency Stop。</p>
     </div>
     <p id="recordDestination" class="setup-message" role="status">開始對戰後顯示 Excel 儲存位置。</p>
     <p id="historyStatus" class="setup-message" role="status"></p>

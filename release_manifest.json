@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "python_version": "3.14.8",
+  "public_release_ready": false,
+  "release_blockers": [
+    "best.pt 的原始訓練資料、export 設定與對外散布授權尚未隨專案封存",
+    "TMflow 專案、控制器版本與相機韌體仍需在每次現場驗收紀錄"
+  ],
+  "files": [
+    {
+      "role": "python-version",
+      "path": "site/.python-version",
+      "bytes": 7,
+      "sha256": "5abd4dc1efa09469b88916c8e4e027a8c266a9b6d06f43ac9da3e30cd00b4ab5"
+    },
+    {
+      "role": "python-dependencies",
+      "path": "site/requirements.lock",
+      "bytes": 849,
+      "sha256": "d286301d092b21ea79dd1af625e1723aa56ff39a3f5ce85fd619eabd8045a403"
+    },
+    {
+      "role": "yolo-weights",
+      "path": "best.pt",
+      "bytes": 5403269,
+      "sha256": "9452278aead49bafb5b1d3329e6c3bc950a586c60d75a91a459bf6f469b847bf",
+      "provenance": "repository asset introduced by commit e2c80f3af218633de3e24cedcbec4b20e8d872d5; original training/export provenance is not archived"
+    },
+    {
+      "role": "xiangqi-engine",
+      "path": "engine_bin/pikafish.exe",
+      "bytes": 7421952,
+      "sha256": "9824fff4e3c4a72afbc6cfdc611c140b32f79e3c5fd5fe4bf6d747833875b86d",
+      "version": "Pikafish 2026-09-25",
+      "license_path": "engine_bin/Copying.txt"
+    },
+    {
+      "role": "xiangqi-nnue",
+      "path": "engine_bin/pikafish.nnue",
+      "bytes": 50706378,
+      "sha256": "7d13d73569a9b571ba0eb20cf1596247bc2a42738967e61afef6482b231e900e",
+      "version": "paired with Pikafish 2026-09-25",
+      "license_path": "engine_bin/NNUE-License.md"
+    },
+    {
+      "role": "engine-license",
+      "path": "engine_bin/Copying.txt",
+      "bytes": 35149,
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    {
+      "role": "nnue-license",
+      "path": "engine_bin/NNUE-License.md",
+      "bytes": 1196,
+      "sha256": "c4aead1c96f81710c2833bb012f6200d990bc56261a137b8d34478c4fce3d563"
+    }
+  ]
+}

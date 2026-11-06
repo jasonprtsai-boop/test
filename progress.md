@@ -28,3 +28,14 @@ Implement the planned Pikafish modes in the existing TM5-700 xiangqi website: ex
 - Added fixed Red/Black controller and side-to-move state, hint/WDL UI, and regression coverage; service/web tests pass 76/76.
 - Final regression: 149/149 tests pass; Python compile and JavaScript syntax checks pass.
 - Chrome verification covered the four mode cards, Human Red start, controller/turn display, hint panel, `render_game_to_text`, and console errors (none). Browser harness artifacts were removed after inspection.
+
+## 2026-11-05 Elo UI iteration
+
+- [x] Add a player-page Elo input with 1280–3133 validation and quick presets.
+- [x] Add a protected `/api/engine/elo` endpoint and expose the active value in state.
+- [x] Retire an already-running engine safely after the current search when strength changes, so the next search cannot silently use the old Elo.
+- [x] Run backend, JavaScript, Playwright, screenshot, and full regression verification.
+
+Verification: 287 Python tests and 7 frontend tests pass; Python compilation,
+dependency checks, JavaScript syntax, diff checks, 1600/1800 browser flow,
+1280–3133 validation, screenshot inspection, and browser console inspection pass.

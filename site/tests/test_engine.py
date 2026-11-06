@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import Mock
 
 from tmchess.board import apply_move, standard_starting_board
 from tmchess.config import CONFIG, SITE_ROOT
@@ -13,6 +14,30 @@ from tests.fakes import starting_board
 
 
 class PikafishIntegrationTests(unittest.TestCase):
+    def test_engine_configuration_enables_1600_elo_strength_limit(self):
+        engine = PikafishEngine(CONFIG.engine)
+
+        self.assertTrue(engine.config.limit_strength)
+        self.assertEqual(engine.config.target_elo, 1600)
+        self.assertIn(
+            "setoption name UCI_LimitStrength value true",
+            engine._configuration_commands(),
+        )
+        self.assertIn(
+            "setoption name UCI_Elo value 1600",
+            engine._configuration_commands(),
+        )
+
+    def test_strength_change_retires_process_but_search_limits_do_not(self):
+        engine = PikafishEngine(CONFIG.engine)
+        engine.stop = Mock()
+
+        engine.update_config(replace(CONFIG.engine, depth=7))
+        engine.stop.assert_not_called()
+
+        engine.update_config(replace(engine.config, target_elo=1800))
+        engine.stop.assert_called_once_with()
+
     def test_invalid_pawn_position_reports_engine_reason(self):
         board = standard_starting_board()
         board[3][0], board[4][1] = 0, 14
@@ -73,14 +98,18 @@ class PikafishIntegrationTests(unittest.TestCase):
     def test_bundled_engine_returns_three_ranked_analysis_lines(self):
         engine = PikafishEngine(CONFIG.engine)
         self.addCleanup(engine.stop)
+        board = starting_board()
 
-        analysis = engine.analyze(starting_board(), "w", multipv=3)
+        analysis = engine.analyze(board, "w", multipv=3)
 
         self.assertIsNotNone(analysis.bestmove)
         self.assertEqual([line.multipv for line in analysis.lines], [1, 2, 3])
         self.assertTrue(all(line.depth >= 1 for line in analysis.lines))
         self.assertTrue(all(line.wdl is not None for line in analysis.lines))
-        self.assertEqual(analysis.lines[0].pv[0], analysis.bestmove.uci)
+        # Strength limiting may deliberately choose a legal move other than
+        # the highest-scored PV.  The selected move must still be legal.
+        assert analysis.bestmove is not None
+        self.assertTrue(engine.is_legal(board, "w", analysis.bestmove))
 
     def test_position_command_replays_complete_history(self):
         initial = starting_board()

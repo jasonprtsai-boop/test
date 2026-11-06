@@ -13,7 +13,7 @@ cd site
 
 ## 操作入口與對戰紀錄
 
-- 玩家頁提供「偵測目前棋盤」與「從頭開始」；偵測預設核對並恢復同場，也可選擇同場重建基準或全新對戰。
+- 玩家頁提供「辨識並恢復對局」與「從頭開始」；偵測預設核對並恢復同場，也可選擇同場重建基準或全新對戰。
 - 新對戰可自訂 Excel 名稱，系統自動附台灣日期時間與識別碼；同場恢復及重建基準沿用同一本 Excel。
 - 玩家頁與監控台顯示 Excel 實際儲存位置及更新狀態；新對戰檔案位於 `site/對局紀錄/整場對戰/`。
 - 監控台展開例行檢查及未通過項目，其餘已通過項目收合；所有安全檢查仍照常執行。
@@ -30,6 +30,7 @@ cd site
 
 ```powershell
 cd site
+.\.venv\Scripts\python.exe tools\verify_release_assets.py
 .\.venv\Scripts\python.exe -W error::ResourceWarning -m unittest discover -s tests -v
 .\.venv\Scripts\python.exe -m compileall -q app.py tmchess tests tools
 .\.venv\Scripts\python.exe -m pip check
