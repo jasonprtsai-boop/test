@@ -54,15 +54,17 @@ def _predict_with_model(
         result.save(filename=output_path)
     detections: list[dict] = []
     if result.boxes is not None:
-        for box in result.boxes:
-            class_id = int(box.cls[0])
+        # Transfer all boxes once. The final two columns are confidence and
+        # class, including when the model supplies a tracking ID.
+        for row in result.boxes.data.cpu().tolist():
+            class_id = int(row[-1])
             label = str(model.names[class_id])
             if label not in NAME_TO_ID:
                 continue
-            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().tolist()
+            x1, y1, x2, y2 = row[:4]
             detections.append({
                 "piece": NAME_TO_ID[label],
-                "confidence": float(box.conf[0]),
+                "confidence": row[-2],
                 "cx": (x1 + x2) / 2,
                 "cy": (y1 + y2) / 2,
                 "width": x2 - x1,
@@ -207,9 +209,9 @@ class DualViewInbox:
             with Image.open(BytesIO(data)) as image:
                 if image.format != "JPEG":
                     raise ValueError("上傳內容不是 JPEG。")
+                size = image.size
                 image.verify()
-            with Image.open(BytesIO(data)) as image:
-                return image.size
+                return size
         except (OSError, ValueError) as exc:
             raise ValueError("JPEG 內容損壞或無法解析。") from exc
 
@@ -501,9 +503,8 @@ class DualViewProcessor:
         except ImportError as exc:
             raise RuntimeError("尚未安裝 Pillow。") from exc
         with Image.open(image_path) as image:
-            image.verify()
-        with Image.open(image_path) as image:
             size = image.size
+            image.verify()
         threshold = self.config.confidence if confidence is None else confidence
         with self._lock:
             if self._model is not None:
@@ -690,20 +691,22 @@ class DualViewProcessor:
         try:
             validate_board(board)
         except ValueError as primary_error:
-            fallback_v1, _ = self._detect(
-                v1_raw,
-                v1_output,
-                confidence=self.config.fallback_confidence,
-                save_output=False,
-            )
-            fallback_v2, _ = self._detect(
-                v2_raw,
-                v2_output,
-                confidence=self.config.fallback_confidence,
-                save_output=False,
-            )
-            candidates = self._v1_candidates(fallback_v1, v1_size)
-            candidates.update(self._v2_candidates(fallback_v2, v2_size))
+            # Repair can only relabel cells occupied by an over-limit piece.
+            # A replacement never exceeds its own limit, so no new eligible
+            # cells can arise in a view we skip here.
+            counts = Counter(piece for row in board for piece in row)
+            over = {piece for piece, limit in PIECE_LIMITS.items() if counts[piece] > limit}
+            affected = {(r, c) for r, row in enumerate(board)
+                        for c, piece in enumerate(row) if piece in over}
+            candidates = {}
+            if affected.difference(V2_MAIN_CELLS):
+                fallback, _ = self._detect(v1_raw, v1_output,
+                    confidence=self.config.fallback_confidence, save_output=False)
+                candidates.update(self._v1_candidates(fallback, v1_size))
+            if affected.intersection(V2_MAIN_CELLS):
+                fallback, _ = self._detect(v2_raw, v2_output,
+                    confidence=self.config.fallback_confidence, save_output=False)
+                candidates.update(self._v2_candidates(fallback, v2_size))
             corrections = self._repair_piece_limit_misclassifications(board, candidates)
             for (row, col), _old, _new, score in corrections:
                 confidence[row][col] = score

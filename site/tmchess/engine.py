@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-from .board import Board, Move, apply_move, board_to_fen, clone_board, parse_uci_move
+from .board import Board, Move, board_to_fen, clone_board, parse_uci_move
 from .config import EngineConfig
 
 
@@ -230,7 +230,10 @@ class PikafishEngine:
                 raise ValueError(f"著法歷史與盤面不一致：{value}")
             if captured and (captured >= 8) == (piece >= 8):
                 raise ValueError(f"著法歷史終點被同色棋子佔用：{value}")
-            replay = apply_move(replay, Move(source, destination, captured, value))
+            # replay is a private copy. Advance it without cloning all 90
+            # cells again for every historical move.
+            replay[source[1]][source[0]] = 0
+            replay[destination[1]][destination[0]] = piece
             normalized.append(value)
             replay_side = "b" if replay_side == "w" else "w"
         if replay != board or replay_side != side:

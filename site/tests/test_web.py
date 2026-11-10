@@ -192,6 +192,7 @@ class WebTests(unittest.TestCase):
         self.assertIn('id="recordDownload"', monitor)
         self.assertNotIn('id="operatorToken"', player)
         self.assertNotIn('id="operatorToken"', monitor)
+        self.assertNotIn('id="confirmBaseTcp"', player)
         self.assertIn('id="confirmBaseTcp"', monitor)
 
     def test_pages_include_keyboard_focus_and_reduced_motion_styles(self):
@@ -212,42 +213,29 @@ class WebTests(unittest.TestCase):
     def test_vision_route_not_on_ui_service(self):
         self.assertEqual(self.client.post("/api/vision/tmvision/detect").status_code, 404)
 
-    def test_invalid_sequence_returns_409(self):
-        response = self.client.post("/api/game/player-done", json={})
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.get_json()["error"]["code"], "not_player_turn")
+    def test_commands_requiring_an_active_turn_return_conflict(self):
+        for command, code in (
+            ("player-done", "not_player_turn"),
+            ("hint", "hint_not_available"),
+            ("execute-engine", "engine_move_not_ready"),
+        ):
+            with self.subTest(command=command):
+                response = self.client.post(f"/api/game/{command}", json={})
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.get_json()["error"]["code"], code)
 
-    def test_hint_is_rejected_before_a_board_is_active(self):
-        response = self.client.post("/api/game/hint", json={})
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.get_json()["error"]["code"], "hint_not_available")
-
-    def test_invalid_first_actor_returns_409(self):
-        response = self.client.post("/api/game/start", json={"first_actor": "robot"})
-        self.assertEqual(response.status_code, 409)
-
-    def test_invalid_game_mode_returns_409(self):
-        response = self.client.post("/api/game/start-mode", json={"mode": "continuous"})
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.get_json()["error"]["code"], "invalid_game_mode")
-
-    def test_engine_execute_is_rejected_before_a_move_is_ready(self):
-        response = self.client.post("/api/game/execute-engine", json={})
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.get_json()["error"]["code"], "engine_move_not_ready")
-
-    def test_invalid_resume_actor_returns_409(self):
-        response = self.client.post("/api/game/resume", json={"current_actor": "robot"})
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.get_json()["error"]["code"], "invalid_current_actor")
-
-    def test_invalid_current_board_color_returns_409(self):
-        response = self.client.post(
-            "/api/game/start-current",
-            json={"player_color": "green", "current_actor": "player"},
-        )
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.get_json()["error"]["code"], "invalid_player_color")
+    def test_invalid_game_options_return_conflict(self):
+        for command, payload, code in (
+            ("start", {"first_actor": "robot"}, "invalid_first_actor"),
+            ("start-mode", {"mode": "continuous"}, "invalid_game_mode"),
+            ("resume", {"current_actor": "robot"}, "invalid_current_actor"),
+            ("start-current", {"player_color": "green", "current_actor": "player"}, "invalid_player_color"),
+            ("start-current", {"mode": "unknown", "current_actor": "player"}, "invalid_game_mode"),
+        ):
+            with self.subTest(command=command, payload=payload):
+                response = self.client.post(f"/api/game/{command}", json=payload)
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.get_json()["error"]["code"], code)
 
     def test_current_board_api_accepts_analysis_mode_without_color_selection(self):
         response = self.client.post("/api/game/start-current", json={
@@ -258,13 +246,6 @@ class WebTests(unittest.TestCase):
         self.assertEqual(state["game_mode"], "analysis")
         self.assertEqual(state["side_to_move"], "b")
         self.assertEqual(state["controllers"], {"w": "human", "b": "human"})
-
-    def test_current_board_api_rejects_unknown_mode(self):
-        response = self.client.post("/api/game/start-current", json={
-            "mode": "unknown", "current_actor": "player",
-        })
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.get_json()["error"]["code"], "invalid_game_mode")
 
     def test_current_board_api_starts_from_captured_position(self):
         response = self.client.post(
@@ -304,12 +285,6 @@ class WebTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.get_json()["error"]["code"], "invalid_first_actor")
-
-    def test_operator_base_tcp_confirmation_is_not_on_player_page(self):
-        player = self.client.get("/player").get_data(as_text=True)
-        monitor = self.client.get("/monitor").get_data(as_text=True)
-        self.assertNotIn('id="confirmBaseTcp"', player)
-        self.assertIn('id="confirmBaseTcp"', monitor)
 
     def test_pages_observe_same_revision(self):
         first = self.client.get("/api/state").get_json()
@@ -437,14 +412,14 @@ class VisionReceiverTests(unittest.TestCase):
     def test_rejects_wrong_source_ip(self):
         self.assertEqual(self.upload(ip="192.168.1.44").status_code, 403)
 
-    def test_rejects_non_jpeg(self):
-        self.assertEqual(self.upload(data=b"hello", mimetype="text/plain").status_code, 400)
-
-    def test_rejects_fake_jpeg(self):
-        self.assertEqual(self.upload(data=b"\xff\xd8\xffnot jpeg", mimetype="image/jpeg").status_code, 400)
-
-    def test_rejects_oversized_upload(self):
-        self.assertEqual(self.upload(data=b"\xff\xd8\xff" + b"x" * 2048).status_code, 413)
+    def test_rejects_invalid_upload_content(self):
+        for data, mimetype, status in (
+            (b"hello", "text/plain", 400),
+            (b"\xff\xd8\xffnot jpeg", "image/jpeg", 400),
+            (b"\xff\xd8\xff" + b"x" * 2048, "image/jpeg", 413),
+        ):
+            with self.subTest(mimetype=mimetype, size=len(data)):
+                self.assertEqual(self.upload(data=data, mimetype=mimetype).status_code, status)
 
     def test_rejects_upload_without_armed_capture(self):
         self.inbox.cancel()

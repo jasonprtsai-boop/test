@@ -74,7 +74,7 @@ class GameSessionStore:
         backup = directory / BACKUP_FILENAME
         temporary = directory / f".{SESSION_FILENAME}.{token}.tmp"
         backup_temporary = directory / f".{BACKUP_FILENAME}.{token}.tmp"
-        data = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        data = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
         with self._lock:
             directory.mkdir(parents=True, exist_ok=True)
             try:

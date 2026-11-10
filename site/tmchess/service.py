@@ -1128,7 +1128,10 @@ class GameService:
     def _persist_session_locked(self) -> None:
         if self._game_id is None:
             return
-        state = self.get_state()
+        # The journal consumes workflow state only. Avoid reconstructing
+        # history and checking the Excel download path on every checkpoint.
+        self._refresh_disk_space_locked()
+        state = self.store.snapshot()
         saved_at = utc_now()
         self._journal.append_state_history(
             state,
@@ -1502,8 +1505,10 @@ class GameService:
             self._engine_history.append(record)
             self._persist_session()
         terminal = {}
+        engine_started = time.monotonic()
         try:
             result = getattr(self.engine, operation)(board, side, *args, **context)
+            terminal["engine_call_seconds"] = round(time.monotonic() - engine_started, 3)
             terminal["status"] = "completed"
             if isinstance(result, Move):
                 terminal["bestmove"] = result.uci
@@ -1519,6 +1524,7 @@ class GameService:
                 terminal["result"] = result
             return result
         except Exception as exc:
+            terminal.setdefault("engine_call_seconds", round(time.monotonic() - engine_started, 3))
             terminal.update(status="failed", error_type=type(exc).__name__, error_message=str(exc))
             raise
         finally:
@@ -2109,7 +2115,7 @@ class GameService:
             and is_red(before[row][col]) == expected_red
             and observed[row][col] == 0
         ]
-        matches: list[tuple[Move, Board, list[Position]]] = []
+        match: tuple[Move, Board] | None = None
         for source in sources:
             sx, sy = source
             moved_piece = before[sy][sx]
@@ -2134,19 +2140,22 @@ class GameService:
                     expected = apply_move(before, move)
                 except ValueError:
                     continue
-                corrected = expected
-                repaired = [
-                    (col, row) for row in range(10) for col in range(9)
-                    if observed[row][col] != expected[row][col]
-                    and (col, row) not in {source, destination}
-                ]
                 try:
-                    validate_board(corrected)
-                    confirmed_move = find_player_move(before, corrected, side)
+                    confirmed_move = find_player_move(before, expected, side)
                 except ValueError:
                     continue
-                matches.append((confirmed_move, corrected, repaired))
-        return matches[0] if len(matches) == 1 else None
+                if match is not None:
+                    return None
+                match = confirmed_move, expected
+        if match is None:
+            return None
+        confirmed_move, expected = match
+        moved_cells = (confirmed_move.source, confirmed_move.destination)
+        repaired = [
+            (col, row) for row in range(10) for col in range(9)
+            if observed[row][col] != expected[row][col] and (col, row) not in moved_cells
+        ]
+        return confirmed_move, expected, repaired
 
     def _log_temporal_repairs(self, context: str, repaired: list[Position]) -> None:
         if repaired:

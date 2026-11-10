@@ -48,13 +48,7 @@ class VisionMappingTests(unittest.TestCase):
                     board[row][col] = piece
                 self.assertEqual(board, standard_starting_board())
 
-    def test_highest_confidence_wins_collision(self):
-        low = {"piece": 14, "confidence": .5, "cx": 1355.5, "cy": 155.0}
-        high = {"piece": 13, "confidence": .9, "cx": 1355.5, "cy": 155.0}
-        board = self.processor._map_v1([low, high], CONFIG.vision.v1_reference)
-        self.assertEqual(board[0][4], 13)
-
-    def test_selected_detection_confidence_is_published_per_cell(self):
+    def test_collision_publishes_highest_confidence_piece_and_score(self):
         low = {"piece": 14, "confidence": .26, "cx": 1355.5, "cy": 155.0}
         high = {"piece": 13, "confidence": .91, "cx": 1355.5, "cy": 155.0}
 
@@ -299,7 +293,7 @@ class InboxTimeoutTests(unittest.TestCase):
             with self.assertRaisesRegex(TimeoutError, "已收到一個視角.*等待另一個視角"):
                 inbox.wait(0.01)
 
-    def test_selected_game_groups_both_views_under_one_game_folder(self):
+    def test_selected_game_stores_both_views_with_default_or_round_prefix(self):
         (SITE_ROOT / "runtime").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=SITE_ROOT / "runtime") as directory:
             root = Path(directory)
@@ -308,36 +302,19 @@ class InboxTimeoutTests(unittest.TestCase):
             capture_id = "20261012T010204Z-87654321"
             inbox.set_receiver_ready(True)
             inbox.select_game(game_id)
-            inbox.arm(capture_id)
-            inbox.accept("127.0.0.1", "image/jpeg", self.jpeg(), "v1")
-            inbox.accept("127.0.0.1", "image/jpeg", self.jpeg(), "v2")
-
-            v1, v2 = inbox.wait(0.01)
-
-            expected = root / game_id
-            self.assertEqual(v1.parent, expected)
-            self.assertEqual(v2.parent, expected)
-            self.assertEqual(v1.name, f"{capture_id}_v1.jpg")
-            self.assertEqual(v2.name, f"{capture_id}_v2.jpg")
-
-    def test_round_and_capture_number_are_in_flat_filenames(self):
-        (SITE_ROOT / "runtime").mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(dir=SITE_ROOT / "runtime") as directory:
-            root = Path(directory)
-            inbox = DualViewInbox(root, "127.0.0.1", 1024 * 1024)
-            game_id = "20261012T010203Z-12345678"
-            capture_id = "20261012T010204Z-87654321"
-            inbox.set_receiver_ready(True)
-            inbox.select_game(game_id)
-            inbox.arm(capture_id, f"R003_C005_player_move_{capture_id}")
-            inbox.accept("127.0.0.1", "image/jpeg", self.jpeg(), "v1")
-            inbox.accept("127.0.0.1", "image/jpeg", self.jpeg(), "v2")
-
-            v1, v2 = inbox.wait(0.01)
-
-            self.assertEqual(v1.parent, root / game_id)
-            self.assertEqual(v1.name, f"R003_C005_player_move_{capture_id}_v1.jpg")
-            self.assertEqual(v2.name, f"R003_C005_player_move_{capture_id}_v2.jpg")
+            data = self.jpeg()
+            for prefix in (None, f"R003_C005_player_move_{capture_id}"):
+                with self.subTest(prefix=prefix):
+                    if prefix is None:
+                        inbox.arm(capture_id)
+                    else:
+                        inbox.arm(capture_id, prefix)
+                    for view in ("v1", "v2"):
+                        inbox.accept("127.0.0.1", "image/jpeg", data, view)
+                    v1, v2 = inbox.wait(0.01)
+                    expected = root / game_id
+                    self.assertEqual(v1, expected / f"{prefix or capture_id}_v1.jpg")
+                    self.assertEqual(v2, expected / f"{prefix or capture_id}_v2.jpg")
 
     def test_capture_result_json_is_saved_beside_images(self):
         (SITE_ROOT / "runtime").mkdir(exist_ok=True)

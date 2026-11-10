@@ -13,16 +13,15 @@ class SmoothPreviewTests(unittest.TestCase):
         self.assertFalse(p["low_contact_segment_smoothed"])
         self.assertFalse(p["controller_path_verified"])
 
-    def test_short_or_zero_paths_do_not_blend(self):
-        for distance in (0, 1, 10):
-            with self.subTest(distance=distance):
-                self.assertFalse(preview((0, 0), (distance, 0))["smoothing_candidate"])
-
-    def test_insufficient_vertical_margin_does_not_blend(self):
-        self.assertFalse(preview((0, 0), (100, 0), safe=365)["smoothing_candidate"])
-
-    def test_disabled_radius(self):
-        self.assertFalse(preview((0, 0), (100, 0), radius=0)["smoothing_candidate"])
+    def test_geometry_or_disabled_radius_prevents_blending(self):
+        cases = (
+            (0, {}), (1, {}), (10, {}),
+            (100, {"safe": 365}), (100, {"radius": 0}),
+        )
+        for distance, options in cases:
+            with self.subTest(distance=distance, options=options):
+                result = preview((0, 0), (distance, 0), **options)
+                self.assertFalse(result["smoothing_candidate"])
 
     def test_invalid_inputs_rejected(self):
         for kwargs in ({"radius": -1}, {"radius": 6}, {"radius": float("nan")},

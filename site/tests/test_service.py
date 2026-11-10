@@ -70,23 +70,6 @@ class ServiceTests(unittest.TestCase):
         if hasattr(self, "service"):
             self.service.close()
 
-    def test_player_first_full_round(self):
-        initial = starting_board()
-        player_move = Move((0, 3), (0, 4), 0, "a3a4")
-        after_player = apply_move(initial, player_move)
-        ai_move = Move((0, 6), (0, 5), 0, "a6a5")
-        expected = apply_move(after_player, ai_move)
-        self.service, robot, _vision, engine = make_service([after_player, expected], [ai_move])
-        self.service.submit_start("player")
-        state = wait_for(self.service, Phase.PLAYER_TURN.value)
-        self.assertEqual(state["first_actor"], "player")
-        self.assertTrue(state["controls"]["can_player_done"])
-        self.service.submit_player_done()
-        state = wait_for(self.service, Phase.PLAYER_TURN.value)
-        self.assertEqual(state["last_move"]["uci"], "a6a5")
-        self.assertEqual(engine.suggest_calls, 1)
-        self.assertEqual(len(robot.moves), 1)
-
     def test_hint_returns_analysis_without_capture_or_robot_motion(self):
         hint = Move((1, 2), (4, 2), 0, "b2e2")
         line = AnalysisLine(
@@ -541,19 +524,6 @@ class ServiceTests(unittest.TestCase):
         self.assertFalse(closer.is_alive())
         self.assertTrue(robot.closed)
 
-    def test_player_first_start_does_not_capture_think_or_move(self):
-        self.service, robot, vision, engine = make_service([])
-
-        self.service.submit_start("player")
-        state = wait_for(self.service, Phase.PLAYER_TURN.value)
-
-        self.assertEqual(state["current_turn"], "player")
-        self.assertTrue(state["controls"]["can_player_done"])
-        self.assertEqual(vision.calls, 0)
-        self.assertEqual(robot.trigger_calls, 0)
-        self.assertEqual(robot.moves, [])
-        self.assertEqual(engine.suggest_calls, 0)
-
     def test_ai_first_means_ai_is_red(self):
         initial = starting_board()
         ai_move = Move((0, 3), (0, 4), 0, "a3a4")
@@ -632,7 +602,8 @@ class ServiceTests(unittest.TestCase):
         )
 
         self.service.submit_start("ai")
-        wait_for(self.service, Phase.ERROR.value)
+        state = wait_for(self.service, Phase.ERROR.value)
+        self.assertIn("Pikafish", state["error"]["message"])
 
         self.assertEqual(sessions.load_latest()["current_turn"], "ai")
 
@@ -651,15 +622,25 @@ class ServiceTests(unittest.TestCase):
         wait_for(self.service, Phase.PLAYER_TURN.value)
         self.assertEqual(robot.moves[0].captured_piece, 7)
 
-    def test_completed_motion_commits_without_second_capture(self):
+    def test_player_first_round_waits_for_input_and_commits_without_second_capture(self):
         after_player = apply_move(starting_board(), Move((0, 3), (0, 4), 0, "a3a4"))
         ai_move = Move((0, 6), (0, 5), 0, "a6a5")
         self.service, robot, vision, engine = make_service(
             [after_player, AssertionError("second capture forbidden")], [ai_move])
+        self.assertFalse(self.service.get_state()["controls"]["can_player_done"])
         self.service.submit_start("player")
-        wait_for(self.service, Phase.PLAYER_TURN.value)
+        opening = wait_for(self.service, Phase.PLAYER_TURN.value)
+        self.assertEqual(opening["first_actor"], "player")
+        self.assertEqual(opening["current_turn"], "player")
+        self.assertTrue(opening["controls"]["can_player_done"])
+        self.assertEqual(vision.calls, 0)
+        self.assertEqual(robot.trigger_calls, 0)
+        self.assertEqual(robot.moves, [])
+        self.assertEqual(engine.suggest_calls, 0)
+
         self.service.submit_player_done()
         state = wait_for(self.service, Phase.PLAYER_TURN.value)
+        self.assertEqual(state["last_move"]["uci"], ai_move.uci)
         self.assertEqual(vision.calls, 1)
         self.assertEqual(robot.moves, [ai_move])
         self.assertEqual(engine.suggest_calls, 1)
@@ -741,15 +722,6 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(state["controls"]["can_confirm_safe_stop"])
         self.assertEqual(robot.moves, [])
 
-    def test_yolo_failure_is_structured_error(self):
-        self.service, *_ = make_service([RuntimeError("YOLO failed")])
-        self.service.submit_start("player")
-        wait_for(self.service, Phase.PLAYER_TURN.value)
-        self.service.submit_player_done()
-        state = wait_for(self.service, Phase.ERROR.value)
-        self.assertEqual(state["error"]["code"], "workflow_failed")
-        self.assertFalse(state["error"]["retryable"])
-
     def test_failed_capture_records_its_own_id_and_reason(self):
         (SITE_ROOT / "runtime").mkdir(exist_ok=True)
         temporary = tempfile.TemporaryDirectory(dir=SITE_ROOT / "runtime")
@@ -764,6 +736,9 @@ class ServiceTests(unittest.TestCase):
         self.service.submit_player_done()
         state = wait_for(self.service, Phase.ERROR.value)
 
+        self.assertEqual(state["error"]["code"], "workflow_failed")
+        self.assertFalse(state["error"]["retryable"])
+
         snapshot = sessions.load_latest()
         attempt = snapshot["capture_history"][-1]
         self.assertEqual(attempt["status"], "failed")
@@ -771,13 +746,6 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(attempt["error_message"], "YOLO failed")
         self.assertEqual(state["vision"]["last_attempt_id"], attempt["capture_id"])
         self.assertEqual(snapshot["event_history"][-1]["capture_id"], attempt["capture_id"])
-
-    def test_pikafish_failure(self):
-        initial = starting_board()
-        self.service, *_ = make_service([initial], engine_error="suggest")
-        self.service.submit_start("ai")
-        state = wait_for(self.service, Phase.ERROR.value)
-        self.assertIn("Pikafish", state["error"]["message"])
 
     def test_illegal_engine_suggestion_is_rejected_before_robot_motion(self):
         initial = starting_board()
@@ -913,12 +881,6 @@ class ServiceTests(unittest.TestCase):
         self.assertIsNone(
             self.service._match_expected_board(expected, observed, confidence)
         )
-
-    def test_player_button_only_enabled_on_player_turn(self):
-        self.service, *_ = make_service([])
-        self.assertFalse(self.service.get_state()["controls"]["can_player_done"])
-        self.service.submit_start("player")
-        self.assertTrue(wait_for(self.service, Phase.PLAYER_TURN.value)["controls"]["can_player_done"])
 
     def test_resume_reuses_game_folder_and_rechecks_board(self):
         (SITE_ROOT / "runtime").mkdir(exist_ok=True)
